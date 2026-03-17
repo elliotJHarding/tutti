@@ -1,0 +1,114 @@
+{
+  "startAt": 0,
+  "maxResults": 50,
+  "total": 2,
+  "issues": [
+    {
+      "key": "PROJ-101",
+      "id": "10001",
+      "fields": {
+        "summary": "Implement user authentication",
+        "status": {"name": "In Progress", "id": "3"},
+        "priority": {"name": "High", "id": "2"},
+        "issuetype": {"name": "Story", "id": "10001"},
+        "assignee": {
+          "displayName": "Alice Smith",
+          "accountId": "abc123"
+        },
+        "project": {"key": "PROJ", "name": "Project Alpha"},
+        "parent": {
+          "key": "PROJ-50",
+          "fields": {
+            "summary": "Authentication Epic",
+            "issuetype": {"name": "Epic", "id": "10000"}
+          }
+        },
+        "customfield_10014": null,
+        "customfield_10020": [
+          {"name": "Sprint 5", "state": "active", "id": 100}
+        ],
+        "fixVersions": [{"name": "1.2.0", "id": "10100"}],
+        "components": [{"name": "Backend", "id": "10200"}],
+        "labels": ["security", "mvp"],
+        "description": {
+          "type": "doc",
+          "version": 1,
+          "content": [
+            {
+              "type": "paragraph",
+              "content": [
+                {"type": "text", "text": "Add OAuth2 login flow for the application."}
+              ]
+            }
+          ]
+        },
+        "comment": {
+          "comments": [
+            {
+              "id": "20001",
+              "author": {"displayName": "Bob Jones", "accountId": "def456"},
+              "created": "2026-03-15T09:00:00.000+0000",
+              "body": {
+                "type": "doc",
+                "version": 1,
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "content": [
+                      {"type": "text", "text": "Started working on the OAuth provider integration."}
+                    ]
+                  }
+                ]
+              }
+            },
+            {
+              "id": "20002",
+              "author": {"displayName": "Alice Smith", "accountId": "abc123"},
+              "created": "2026-03-16T14:30:00.000+0000",
+              "body": {
+                "type": "doc",
+                "version": 1,
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "content": [
+                      {"type": "text", "text": "PR is up for review."}
+                    ]
+                  }
+                ]
+              }
+            }
+          ],
+          "maxResults": 2,
+          "total": 2,
+          "startAt": 0
+        }
+      }
+    },
+    {
+      "key": "PROJ-102",
+      "id": "10002",
+      "fields": {
+        "summary": "Fix login page CSS",
+        "status": {"name": "To Do", "id": "1"},
+        "priority": {"name": "Low", "id": "4"},
+        "issuetype": {"name": "Bug", "id": "10002"},
+        "assignee": null,
+        "project": {"key": "PROJ", "name": "Project Alpha"},
+        "parent": null,
+        "customfield_10014": "PROJ-50",
+        "customfield_10020": null,
+        "fixVersions": [],
+        "components": [],
+        "labels": [],
+        "description": null,
+        "comment": {
+          "comments": [],
+          "maxResults": 0,
+          "total": 0,
+          "startAt": 0
+        }
+      }
+    }
+  ]
+}

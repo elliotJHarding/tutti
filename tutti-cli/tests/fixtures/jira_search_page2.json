@@ -1,0 +1,27 @@
+{
+  "startAt": 1,
+  "maxResults": 1,
+  "total": 2,
+  "issues": [
+    {
+      "key": "PROJ-200",
+      "id": "10200",
+      "fields": {
+        "summary": "Second page ticket",
+        "status": {"name": "Done", "id": "5"},
+        "priority": {"name": "Medium", "id": "3"},
+        "issuetype": {"name": "Task", "id": "10003"},
+        "assignee": null,
+        "project": {"key": "PROJ", "name": "Project Alpha"},
+        "parent": null,
+        "customfield_10014": null,
+        "customfield_10020": null,
+        "fixVersions": [],
+        "components": [],
+        "labels": [],
+        "description": null,
+        "comment": {"comments": [], "maxResults": 0, "total": 0, "startAt": 0}
+      }
+    }
+  ]
+}

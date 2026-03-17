@@ -1,0 +1,168 @@
+{
+  "data": {
+    "search": {
+      "pageInfo": {
+        "hasNextPage": false,
+        "endCursor": "Y3Vyc29yOjI="
+      },
+      "nodes": [
+        {
+          "number": 42,
+          "title": "ERSC-1278: Fix authentication middleware",
+          "state": "OPEN",
+          "isDraft": false,
+          "url": "https://github.com/acme/backend/pull/42",
+          "createdAt": "2026-03-10T10:00:00Z",
+          "updatedAt": "2026-03-15T14:30:00Z",
+          "mergedAt": null,
+          "headRefName": "feature/ERSC-1278-fix-auth",
+          "repository": {
+            "nameWithOwner": "acme/backend"
+          },
+          "author": {
+            "login": "alice"
+          },
+          "reviews": {
+            "nodes": [
+              {
+                "state": "CHANGES_REQUESTED",
+                "author": { "login": "bob" }
+              },
+              {
+                "state": "APPROVED",
+                "author": { "login": "bob" }
+              }
+            ]
+          },
+          "reviewRequests": {
+            "nodes": []
+          },
+          "commits": {
+            "nodes": [
+              {
+                "commit": {
+                  "statusCheckRollup": {
+                    "state": "SUCCESS"
+                  }
+                }
+              }
+            ]
+          },
+          "comments": {
+            "nodes": [
+              {
+                "author": { "login": "charlie" },
+                "body": "Looks good overall, just a few nits.",
+                "createdAt": "2026-03-12T09:00:00Z"
+              }
+            ]
+          },
+          "reviewThreads": {
+            "nodes": [
+              {
+                "comments": {
+                  "nodes": [
+                    {
+                      "author": { "login": "bob" },
+                      "body": "Consider using a constant here.",
+                      "createdAt": "2026-03-13T11:00:00Z",
+                      "path": "src/auth/middleware.py",
+                      "line": 45
+                    }
+                  ]
+                }
+              }
+            ]
+          }
+        },
+        {
+          "number": 99,
+          "title": "PROJ-500: Add caching layer",
+          "state": "MERGED",
+          "isDraft": false,
+          "url": "https://github.com/acme/backend/pull/99",
+          "createdAt": "2026-03-01T08:00:00Z",
+          "updatedAt": "2026-03-05T16:00:00Z",
+          "mergedAt": "2026-03-05T16:00:00Z",
+          "headRefName": "feature/PROJ-500-caching",
+          "repository": {
+            "nameWithOwner": "acme/backend"
+          },
+          "author": {
+            "login": "alice"
+          },
+          "reviews": {
+            "nodes": [
+              {
+                "state": "APPROVED",
+                "author": { "login": "dave" }
+              }
+            ]
+          },
+          "reviewRequests": {
+            "nodes": []
+          },
+          "commits": {
+            "nodes": [
+              {
+                "commit": {
+                  "statusCheckRollup": {
+                    "state": "SUCCESS"
+                  }
+                }
+              }
+            ]
+          },
+          "comments": {
+            "nodes": []
+          },
+          "reviewThreads": {
+            "nodes": []
+          }
+        },
+        {
+          "number": 7,
+          "title": "WIP: Experiment with new parser",
+          "state": "OPEN",
+          "isDraft": true,
+          "url": "https://github.com/acme/frontend/pull/7",
+          "createdAt": "2026-03-14T12:00:00Z",
+          "updatedAt": "2026-03-14T12:00:00Z",
+          "mergedAt": null,
+          "headRefName": "experiment/ERSC-1278-parser",
+          "repository": {
+            "nameWithOwner": "acme/frontend"
+          },
+          "author": {
+            "login": "alice"
+          },
+          "reviews": {
+            "nodes": []
+          },
+          "reviewRequests": {
+            "nodes": [
+              {
+                "requestedReviewer": { "login": "bob" }
+              }
+            ]
+          },
+          "commits": {
+            "nodes": [
+              {
+                "commit": {
+                  "statusCheckRollup": null
+                }
+              }
+            ]
+          },
+          "comments": {
+            "nodes": []
+          },
+          "reviewThreads": {
+            "nodes": []
+          }
+        }
+      ]
+    }
+  }
+}
