@@ -23,6 +23,15 @@ def graphql_response() -> dict:
     return json.loads((FIXTURES / "github_graphql_response.json").read_text())
 
 
+def _batched_response(single_search_data: dict, count: int = 3) -> dict:
+    """Convert a single-search response into a batched aliased response.
+
+    The batched GraphQL query uses aliases s0, s1, ... instead of a single 'search' key.
+    """
+    search = single_search_data["data"]["search"]
+    return {"data": {f"s{i}": search for i in range(count)}}
+
+
 @pytest.fixture
 def gh() -> GitHubSync:
     return GitHubSync(token="fake-token", github_username="alice")
@@ -469,10 +478,8 @@ class TestFullSync:
         # Create ticket directory that matches PR #42 (ERSC-1278 in title and branch)
         _make_ticket_dir(tmp_workspace, "ERSC-1278", "fix-auth")
 
-        # Mock all 3 queries (author, assignee, review-requested)
-        httpx_mock.add_response(url=_GRAPHQL_URL, json=graphql_response)
-        httpx_mock.add_response(url=_GRAPHQL_URL, json=graphql_response)
-        httpx_mock.add_response(url=_GRAPHQL_URL, json=graphql_response)
+        # Single batched request returns all 3 query results
+        httpx_mock.add_response(url=_GRAPHQL_URL, json=_batched_response(graphql_response))
 
         result = gh.sync(tmp_workspace)
 
@@ -506,9 +513,7 @@ class TestFullSync:
                 }
             }
         }
-        httpx_mock.add_response(url=_GRAPHQL_URL, json=empty_response)
-        httpx_mock.add_response(url=_GRAPHQL_URL, json=empty_response)
-        httpx_mock.add_response(url=_GRAPHQL_URL, json=empty_response)
+        httpx_mock.add_response(url=_GRAPHQL_URL, json=_batched_response(empty_response))
 
         result = gh.sync(tmp_workspace)
         assert result.tickets_synced == 0
@@ -531,10 +536,8 @@ class TestFullSync:
     ):
         _make_ticket_dir(tmp_workspace, "ERSC-1278", "fix-auth")
 
-        # All 3 queries return the same PRs -- dedup should prevent duplicates
-        httpx_mock.add_response(url=_GRAPHQL_URL, json=graphql_response)
-        httpx_mock.add_response(url=_GRAPHQL_URL, json=graphql_response)
-        httpx_mock.add_response(url=_GRAPHQL_URL, json=graphql_response)
+        # All 3 aliases return the same PRs -- dedup should prevent duplicates
+        httpx_mock.add_response(url=_GRAPHQL_URL, json=_batched_response(graphql_response))
 
         result = gh.sync(tmp_workspace)
         assert result.tickets_synced == 1

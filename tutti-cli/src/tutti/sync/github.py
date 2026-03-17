@@ -15,9 +15,7 @@ from tutti.workspace import enumerate_ticket_dirs, orchestrator_dir
 
 _GRAPHQL_URL = "https://api.github.com/graphql"
 
-_PR_SEARCH_QUERY = """
-query($query: String!, $cursor: String) {
-  search(query: $query, type: ISSUE, first: 50, after: $cursor) {
+_PR_FIELDS = """
     pageInfo { hasNextPage endCursor }
     nodes {
       ... on PullRequest {
@@ -67,6 +65,12 @@ query($query: String!, $cursor: String) {
         }
       }
     }
+"""
+
+_PR_SEARCH_QUERY = """
+query($query: String!, $cursor: String) {
+  search(query: $query, type: ISSUE, first: 50, after: $cursor) {
+""" + _PR_FIELDS + """
   }
 }
 """
@@ -135,25 +139,95 @@ class GitHubSync:
         )
 
     def _search_prs(self) -> list[PullRequest]:
-        """Search GitHub for PRs via multiple queries, deduplicate by repo#number."""
-        queries = []
+        """Search GitHub for PRs via batched GraphQL queries, deduplicate by repo#number."""
         if self._username:
-            queries.append(f"type:pr author:{self._username}")
-            queries.append(f"type:pr assignee:{self._username}")
-            queries.append(f"type:pr review-requested:{self._username}")
+            queries = [
+                f"type:pr author:{self._username}",
+                f"type:pr assignee:{self._username}",
+                f"type:pr review-requested:{self._username}",
+            ]
         else:
-            queries.append("type:pr author:@me")
-            queries.append("type:pr review-requested:@me")
+            queries = [
+                "type:pr author:@me",
+                "type:pr review-requested:@me",
+            ]
 
+        # Batch all queries into a single GraphQL request using aliases
         seen: dict[str, PullRequest] = {}
-        for query in queries:
-            prs = self._graphql_search(query)
-            for pr in prs:
+        prs_by_alias, needs_pagination = self._graphql_search_batched(queries)
+        for alias_prs in prs_by_alias.values():
+            for pr in alias_prs:
+                dedup_key = f"{pr.repo}#{pr.number}"
+                if dedup_key not in seen:
+                    seen[dedup_key] = pr
+
+        # Only paginate individually for queries that had more results
+        for query in needs_pagination:
+            for pr in self._graphql_search(query):
                 dedup_key = f"{pr.repo}#{pr.number}"
                 if dedup_key not in seen:
                     seen[dedup_key] = pr
 
         return list(seen.values())
+
+    def _graphql_search_batched(
+        self, queries: list[str]
+    ) -> tuple[dict[str, list[PullRequest]], list[str]]:
+        """Execute multiple search queries in a single GraphQL request using aliases.
+
+        Returns (results_by_alias, queries_needing_pagination).
+        """
+        # Build a single query with aliased search fields
+        parts = ["query("]
+        params = []
+        for i in range(len(queries)):
+            params.append(f"$q{i}: String!")
+        parts.append(", ".join(params))
+        parts.append(") {")
+        for i in range(len(queries)):
+            parts.append(f"  s{i}: search(query: $q{i}, type: ISSUE, first: 50) {{")
+            parts.append(_PR_FIELDS)
+            parts.append("  }")
+        parts.append("}")
+        query_str = "\n".join(parts)
+
+        variables = {f"q{i}": q for i, q in enumerate(queries)}
+
+        response = httpx.post(
+            _GRAPHQL_URL,
+            headers=self._headers,
+            json={"query": query_str, "variables": variables},
+            timeout=30,
+        )
+
+        if response.status_code == 401:
+            raise AuthError("GitHub authentication failed (401)")
+        if response.status_code != 200:
+            raise SyncError(f"GitHub API error: {response.status_code}")
+
+        data = response.json()
+        if "errors" in data:
+            raise SyncError(f"GitHub GraphQL errors: {data['errors']}")
+
+        results: dict[str, list[PullRequest]] = {}
+        needs_pagination: list[str] = []
+
+        for i, query in enumerate(queries):
+            alias = f"s{i}"
+            search = data.get("data", {}).get(alias, {})
+            nodes = search.get("nodes", [])
+            prs = []
+            for node in nodes:
+                if not node or "number" not in node:
+                    continue
+                prs.append(self._parse_pr_node(node))
+            results[alias] = prs
+
+            page_info = search.get("pageInfo", {})
+            if page_info.get("hasNextPage"):
+                needs_pagination.append(query)
+
+        return results, needs_pagination
 
     def _graphql_search(self, query: str) -> list[PullRequest]:
         """Execute a paginated GraphQL search and return PullRequest models."""
