@@ -56,6 +56,15 @@ def table(title: str, columns: list[str], rows: list[list[str]], data: Any = Non
         _console.print(t)
 
 
+def warn(message: str) -> None:
+    """Print a warning message."""
+    if get_json_mode():
+        json.dump({"warning": message}, sys.stdout)
+        sys.stdout.write("\n")
+    else:
+        _console.print(f"[yellow]{message}[/yellow]")
+
+
 def success(message: str) -> None:
     """Print a success message."""
     if get_json_mode():

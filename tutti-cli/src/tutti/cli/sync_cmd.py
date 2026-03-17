@@ -6,7 +6,7 @@ from pathlib import Path
 
 import click
 
-from tutti.cli.output import error, output, success
+from tutti.cli.output import error, output, success, warn
 from tutti.config import (
     AuthError,
     ConfigError,
@@ -27,9 +27,10 @@ def _resolve_root(ctx: click.Context) -> Path:
     return find_workspace_root()
 
 
-def _build_all_sources(cfg):
+def _build_all_sources(cfg) -> tuple[list, list[tuple[str, str]]]:
     """Build all available sync sources, skipping those with missing auth."""
     sources = []
+    skipped: list[tuple[str, str]] = []
 
     # Jira
     try:
@@ -41,16 +42,16 @@ def _build_all_sources(cfg):
             token=jira_token(),
             jql=cfg.jira_jql,
         ))
-    except AuthError:
-        pass
+    except AuthError as exc:
+        skipped.append(("jira", str(exc)))
 
     # GitHub
     try:
         from tutti.sync.github import GitHubSync
 
         sources.append(GitHubSync(token=gh_token()))
-    except AuthError:
-        pass
+    except AuthError as exc:
+        skipped.append(("github", str(exc)))
 
     # CI (no auth required)
     from tutti.sync.ci import CISync
@@ -64,7 +65,7 @@ def _build_all_sources(cfg):
     from tutti.sync.workspace_sync import WorkspaceSync
     sources.append(WorkspaceSync())
 
-    return sources
+    return sources, skipped
 
 
 def _report_results(results):
@@ -106,9 +107,15 @@ def sync(ctx: click.Context, force: bool) -> None:
         "ci": cfg.sync_intervals.ci,
     }
     coordinator = SyncCoordinator(root, intervals)
-    sources = _build_all_sources(cfg)
+    sources, skipped = _build_all_sources(cfg)
+    for name, reason in skipped:
+        warn(f"{name}: skipped ({reason})")
     results = coordinator.run(sources, force=force)
     _report_results(results)
+
+    total_synced = sum(r.tickets_synced for r in results)
+    if total_synced == 0 and skipped:
+        ctx.exit(1)
 
 
 def _run_single_source(ctx, source_factory):

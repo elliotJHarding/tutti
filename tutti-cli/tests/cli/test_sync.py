@@ -45,16 +45,43 @@ def test_sync_subcommands_are_registered() -> None:
         assert result.exit_code == 0, f"Subcommand '{subcmd}' failed: {result.output}"
 
 
-def test_sync_without_subcommand(tmp_path: Path) -> None:
-    """tutti sync without a subcommand should run all sources."""
-    # Create a minimal config so the command can proceed
+def test_sync_without_subcommand_exits_nonzero_when_sources_skipped(tmp_path: Path) -> None:
+    """tutti sync with no auth configured should warn about skipped sources and exit non-zero."""
+    import os
+
     config_path = tmp_path / "config.yaml"
     config_path.write_text("workspace:\n  root: .\n")
 
     runner = CliRunner()
-    result = runner.invoke(cli, ["--workspace-root", str(tmp_path), "sync"])
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("JIRA_EMAIL", "JIRA_TOKEN", "GH_TOKEN", "GITHUB_TOKEN")}
+    result = runner.invoke(
+        cli,
+        ["--workspace-root", str(tmp_path), "sync"],
+        env=env,
+    )
 
-    assert result.exit_code == 0, result.output
+    assert result.exit_code != 0, result.output
+    assert "skipped" in result.output
+
+
+def test_sync_skipped_sources_show_warnings(tmp_path: Path) -> None:
+    """Skipped sources should produce warning messages with the reason."""
+    import os
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("workspace:\n  root: .\n")
+
+    runner = CliRunner()
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("JIRA_EMAIL", "JIRA_TOKEN")}
+    result = runner.invoke(
+        cli,
+        ["--workspace-root", str(tmp_path), "sync"],
+        env=env,
+    )
+
+    assert "jira: skipped" in result.output
 
 
 def test_sync_force_flag() -> None:
