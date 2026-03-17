@@ -198,8 +198,24 @@ def jira_token() -> str:
 
 
 def gh_token() -> str:
-    """Return GH_TOKEN (or GITHUB_TOKEN) from the environment, or raise AuthError."""
+    """Return a GitHub token from env vars or ``gh auth token``, or raise AuthError."""
     value = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
-    if not value:
-        raise AuthError("GH_TOKEN environment variable is not set")
-    return value
+    if value:
+        return value
+
+    # Fall back to the gh CLI's stored token.
+    import shutil
+    import subprocess
+
+    if shutil.which("gh"):
+        try:
+            result = subprocess.run(
+                ["gh", "auth", "token"],
+                capture_output=True, text=True, timeout=5,
+            )
+            if result.returncode == 0 and result.stdout.strip():
+                return result.stdout.strip()
+        except Exception:
+            pass
+
+    raise AuthError("No GitHub token found (checked GH_TOKEN, GITHUB_TOKEN, gh auth token)")

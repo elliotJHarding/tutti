@@ -156,8 +156,26 @@ def test_jira_token_returns_value(monkeypatch: pytest.MonkeyPatch) -> None:
 def test_gh_token_raises_when_missing(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("GH_TOKEN", raising=False)
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
-    with pytest.raises(AuthError, match="GH_TOKEN"):
+    monkeypatch.setattr("shutil.which", lambda _: None)
+    with pytest.raises(AuthError, match="No GitHub token found"):
         gh_token()
+
+
+def test_gh_token_falls_back_to_gh_auth(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("GH_TOKEN", raising=False)
+    monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+
+    import subprocess
+    from unittest.mock import MagicMock
+
+    mock_result = MagicMock()
+    mock_result.returncode = 0
+    mock_result.stdout = "gho_fake_token_from_cli\n"
+
+    monkeypatch.setattr("shutil.which", lambda _: "/usr/bin/gh")
+    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: mock_result)
+
+    assert gh_token() == "gho_fake_token_from_cli"
 
 
 def test_gh_token_returns_gh_token(monkeypatch: pytest.MonkeyPatch) -> None:
