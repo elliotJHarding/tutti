@@ -1,4 +1,8 @@
-# tutti
+<p align="center">
+  <img src="logo.svg" alt="tutti logo" width="120"/>
+</p>
+
+<h1 align="center">tutti</h1>
 
 Developer workflow orchestration CLI. Syncs data from Jira and GitHub into a ticket-centric folder structure and provides an AI orchestrator (Claude Code session) that reviews state and produces artifacts.
 

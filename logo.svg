@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 220 130" width="220" height="130">
+  <defs>
+    <style>
+      .stroke { fill: none; stroke: #1a1a2e; stroke-width: 2.5; stroke-linecap: round; }
+      .stroke-thin { fill: none; stroke: #1a1a2e; stroke-width: 1.8; stroke-linecap: round; }
+      .conductor { fill: #1a1a2e; }
+    </style>
+  </defs>
+
+  <g transform="translate(110, 116)">
+    <!-- Fan boundary: outer arc and straight edges -->
+    <path class="stroke" d="M -100,0 A 100,100 0 0,1 100,0"/>
+    <line class="stroke" x1="0" y1="0" x2="-100" y2="0"/>
+    <line class="stroke" x1="0" y1="0" x2="100" y2="0"/>
+
+    <!-- Left radial divider at ~140deg (conductor to outer arc) -->
+    <line class="stroke-thin" x1="0" y1="0" x2="-76.6" y2="-64.3"/>
+
+    <!-- Right radial divider at ~35deg (conductor to outer arc) -->
+    <line class="stroke-thin" x1="0" y1="0" x2="81.9" y2="-57.4"/>
+
+    <!-- Inner arcs: narrower spans between the two radial dividers -->
+    <!-- Arc r=76, from 140deg to 35deg -->
+    <path class="stroke-thin" d="M -58.2,-48.9 A 76,76 0 0,1 62.3,-43.6"/>
+    <!-- Arc r=54, from 132deg to 42deg -->
+    <path class="stroke-thin" d="M -36.1,-40.1 A 54,54 0 0,1 40.1,-36.1"/>
+    <!-- Arc r=34, from 120deg to 60deg -->
+    <path class="stroke-thin" d="M -17.0,-29.4 A 34,34 0 0,1 17.0,-29.4"/>
+
+    <!-- Center divider: conductor up to 2nd arc -->
+    <line class="stroke-thin" x1="0" y1="0" x2="0" y2="-76"/>
+
+    <!-- Conductor circle -->
+    <circle class="conductor" cx="0" cy="0" r="7"/>
+    <circle cx="0" cy="0" r="10" fill="none" stroke="#1a1a2e" stroke-width="1.5"/>
+  </g>
+</svg>
