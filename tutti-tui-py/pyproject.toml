@@ -1,0 +1,22 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tutti-tui"
+version = "0.1.0"
+description = "Terminal UI for tutti workspace management"
+requires-python = ">=3.11"
+dependencies = [
+    "textual>=3.0",
+    "tutti",
+]
+
+[project.optional-dependencies]
+dev = ["textual-dev", "pytest", "ruff"]
+
+[project.scripts]
+tutti-tui = "tutti_tui.app:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tutti_tui"]
