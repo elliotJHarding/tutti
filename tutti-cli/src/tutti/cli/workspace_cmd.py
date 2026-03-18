@@ -7,16 +7,10 @@ from pathlib import Path
 
 import click
 
-from tutti.cli.output import error, output, success, table
-from tutti.config import ConfigError, find_workspace_root, load_config
-from tutti.workspace import ensure_ticket_dir, enumerate_ticket_dirs, resolve_ticket_dir
-
-
-def _resolve_root(ctx: click.Context) -> Path:
-    root = ctx.obj.get("workspace_root") if ctx.obj else None
-    if root:
-        return Path(root).resolve()
-    return find_workspace_root()
+from tutti.cli.output import Col, error, output, success, table
+from tutti.cli.resolve import complete_ticket_key, resolve_root
+from tutti.config import ConfigError, load_config
+from tutti.workspace import enumerate_ticket_dirs, resolve_ticket_dir
 
 
 @click.group()
@@ -26,35 +20,8 @@ def workspace(ctx: click.Context) -> None:
     pass
 
 
-@workspace.command("create")
-@click.argument("key")
-@click.option("--summary", default="", help="Ticket summary for directory name.")
-@click.option("--epic", default=None, help="Epic key to nest under.")
-@click.option("--epic-summary", default=None, help="Epic summary for directory name.")
-@click.pass_context
-def workspace_create(
-    ctx: click.Context,
-    key: str,
-    summary: str,
-    epic: str | None,
-    epic_summary: str | None,
-) -> None:
-    """Create a workspace for a ticket."""
-    try:
-        root = _resolve_root(ctx)
-    except ConfigError as exc:
-        error(str(exc))
-        ctx.exit(1)
-        return
-
-    ticket_dir = ensure_ticket_dir(
-        root, key, summary or key, epic_key=epic, epic_summary=epic_summary
-    )
-    success(f"Workspace created at {ticket_dir}")
-
-
 @workspace.command("add-repo")
-@click.argument("key")
+@click.argument("key", shell_complete=complete_ticket_key)
 @click.argument("repo_name")
 @click.option("--branch", default=None, help="Branch name for worktree.")
 @click.pass_context
@@ -63,7 +30,7 @@ def workspace_add_repo(
 ) -> None:
     """Add a repo worktree to a ticket workspace."""
     try:
-        root = _resolve_root(ctx)
+        root = resolve_root(ctx)
         cfg = load_config(root)
     except ConfigError as exc:
         error(str(exc))
@@ -72,23 +39,30 @@ def workspace_add_repo(
 
     ticket_dir = resolve_ticket_dir(root, key)
     if not ticket_dir:
-        error(f"No workspace found for {key}. Run 'tutti workspace create {key}' first.")
+        error(f"No workspace found for {key}. Run 'tutti sync --force' to create ticket directories.")
         ctx.exit(1)
         return
 
     # Search for repo in configured repo_paths
     repo_path = None
+    available_repos: list[str] = []
     for search_path in cfg.repo_paths:
+        if not search_path.is_dir():
+            continue
         candidate = search_path / repo_name
         if candidate.is_dir() and (candidate / ".git").exists():
             repo_path = candidate
             break
+        # Collect available repos for error message
+        for child in search_path.iterdir():
+            if child.is_dir() and (child / ".git").exists():
+                available_repos.append(child.name)
 
     if not repo_path:
-        error(
-            f"Repository '{repo_name}' not found in configured repoPaths: "
-            f"{[str(p) for p in cfg.repo_paths]}"
-        )
+        msg = f"Repository '{repo_name}' not found in configured repoPaths."
+        if available_repos:
+            msg += f" Available repos: {', '.join(sorted(set(available_repos)))}"
+        error(msg)
         ctx.exit(1)
         return
 
@@ -129,7 +103,7 @@ def workspace_add_repo(
 def workspace_status(ctx: click.Context) -> None:
     """Show workspace health across all tickets."""
     try:
-        root = _resolve_root(ctx)
+        root = resolve_root(ctx)
     except ConfigError as exc:
         error(str(exc))
         ctx.exit(1)
@@ -162,4 +136,37 @@ def workspace_status(ctx: click.Context) -> None:
             "path": str(path),
         })
 
-    table("Workspace Status", ["Key", "Artifacts", "Repos", "Path"], rows, data=data_list)
+    columns: list[str | Col] = [
+        "Key",
+        Col("Artifacts", justify="right"),
+        Col("Repos", justify="right"),
+        Col("Path", max_width=50),
+    ]
+    table("Workspace Status", columns, rows, data=data_list)
+
+
+@workspace.command("path")
+@click.argument("key", shell_complete=complete_ticket_key)
+@click.pass_context
+def workspace_path(ctx: click.Context, key: str) -> None:
+    """Print the workspace path for a ticket. Useful for shell integration:
+    cd $(tutti workspace path KEY)
+    """
+    try:
+        root = resolve_root(ctx)
+    except ConfigError as exc:
+        error(str(exc))
+        ctx.exit(1)
+        return
+
+    ticket_dir = resolve_ticket_dir(root, key)
+    if not ticket_dir:
+        error(f"No workspace found for {key}.")
+        ctx.exit(1)
+        return
+
+    # Print raw path (no formatting) for shell consumption
+    if ctx.obj and ctx.obj.get("json"):
+        output("", data={"key": key, "path": str(ticket_dir)})
+    else:
+        click.echo(str(ticket_dir))

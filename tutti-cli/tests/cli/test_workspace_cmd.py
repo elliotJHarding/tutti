@@ -1,5 +1,6 @@
 """Tests for the tutti workspace command."""
 
+import json
 from pathlib import Path
 
 from click.testing import CliRunner
@@ -12,68 +13,15 @@ def _init_workspace(runner: CliRunner, root: Path) -> None:
     runner.invoke(cli, ["--workspace-root", str(root), "init"])
 
 
-def test_workspace_create_creates_directory(tmp_path: Path) -> None:
-    """workspace create KEY should create a ticket directory with orchestrator subdir."""
-    runner = CliRunner()
-    _init_workspace(runner, tmp_path)
+def _create_ticket_dir(root: Path, key: str, slug: str = "") -> Path:
+    """Manually create a ticket directory with orchestrator subdir.
 
-    result = runner.invoke(
-        cli, ["--workspace-root", str(tmp_path), "workspace", "create", "PROJ-100"],
-    )
-
-    assert result.exit_code == 0, result.output
-    assert "Workspace created" in result.output
-
-    # Should have created a directory starting with PROJ-100-
-    dirs = [d for d in tmp_path.iterdir() if d.is_dir() and d.name.startswith("PROJ-100-")]
-    assert len(dirs) == 1
-    assert (dirs[0] / "orchestrator").is_dir()
-
-
-def test_workspace_create_with_summary(tmp_path: Path) -> None:
-    """workspace create KEY --summary 'foo bar' should include slug in dir name."""
-    runner = CliRunner()
-    _init_workspace(runner, tmp_path)
-
-    result = runner.invoke(
-        cli,
-        ["--workspace-root", str(tmp_path), "workspace", "create",
-         "PROJ-200", "--summary", "Fix login bug"],
-    )
-
-    assert result.exit_code == 0, result.output
-
-    dirs = [d for d in tmp_path.iterdir() if d.is_dir() and d.name.startswith("PROJ-200-")]
-    assert len(dirs) == 1
-    assert "fix-login-bug" in dirs[0].name
-
-
-def test_workspace_create_with_epic(tmp_path: Path) -> None:
-    """workspace create KEY --epic EPIC-1 should nest under epic directory."""
-    runner = CliRunner()
-    _init_workspace(runner, tmp_path)
-
-    result = runner.invoke(
-        cli,
-        [
-            "--workspace-root", str(tmp_path),
-            "workspace", "create", "PROJ-300",
-            "--epic", "EPIC-1",
-            "--epic-summary", "Authentication Epic",
-        ],
-    )
-
-    assert result.exit_code == 0, result.output
-
-    # Should be nested: root / EPIC-1-authentication-epic / PROJ-300-proj-300 / orchestrator
-    epic_dirs = [d for d in tmp_path.iterdir() if d.is_dir() and d.name.startswith("EPIC-1-")]
-    assert len(epic_dirs) == 1
-    ticket_dirs = [
-        d for d in epic_dirs[0].iterdir()
-        if d.is_dir() and d.name.startswith("PROJ-300-")
-    ]
-    assert len(ticket_dirs) == 1
-    assert (ticket_dirs[0] / "orchestrator").is_dir()
+    This replaces the removed ``workspace create`` command.
+    """
+    dirname = f"{key}-{slug}" if slug else f"{key}-{key.lower()}"
+    ticket_dir = root / dirname
+    (ticket_dir / "orchestrator").mkdir(parents=True)
+    return ticket_dir
 
 
 def test_workspace_status_empty(tmp_path: Path) -> None:
@@ -88,13 +36,12 @@ def test_workspace_status_empty(tmp_path: Path) -> None:
 
 
 def test_workspace_status_shows_tickets(tmp_path: Path) -> None:
-    """workspace status should list created tickets."""
+    """workspace status should list tickets found in the workspace."""
     runner = CliRunner()
     _init_workspace(runner, tmp_path)
 
-    # Create two tickets
-    runner.invoke(cli, ["--workspace-root", str(tmp_path), "workspace", "create", "PROJ-10"])
-    runner.invoke(cli, ["--workspace-root", str(tmp_path), "workspace", "create", "PROJ-20"])
+    _create_ticket_dir(tmp_path, "PROJ-10")
+    _create_ticket_dir(tmp_path, "PROJ-20")
 
     result = runner.invoke(cli, ["--workspace-root", str(tmp_path), "workspace", "status"])
 
@@ -105,12 +52,10 @@ def test_workspace_status_shows_tickets(tmp_path: Path) -> None:
 
 def test_workspace_status_json(tmp_path: Path) -> None:
     """workspace status --json should produce parseable JSON output."""
-    import json
-
     runner = CliRunner()
     _init_workspace(runner, tmp_path)
 
-    runner.invoke(cli, ["--workspace-root", str(tmp_path), "workspace", "create", "PROJ-50"])
+    _create_ticket_dir(tmp_path, "PROJ-50")
 
     result = runner.invoke(
         cli, ["--json", "--workspace-root", str(tmp_path), "workspace", "status"]
@@ -121,3 +66,30 @@ def test_workspace_status_json(tmp_path: Path) -> None:
     assert isinstance(data, list)
     assert len(data) == 1
     assert data[0]["key"] == "PROJ-50"
+
+
+def test_workspace_path_found(tmp_path: Path) -> None:
+    """workspace path KEY should print the ticket directory path."""
+    runner = CliRunner()
+    _init_workspace(runner, tmp_path)
+
+    ticket_dir = _create_ticket_dir(tmp_path, "PROJ-99", "some-feature")
+
+    result = runner.invoke(
+        cli, ["--workspace-root", str(tmp_path), "workspace", "path", "PROJ-99"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert str(ticket_dir) in result.output.strip()
+
+
+def test_workspace_path_not_found(tmp_path: Path) -> None:
+    """workspace path KEY should fail when no matching directory exists."""
+    runner = CliRunner()
+    _init_workspace(runner, tmp_path)
+
+    result = runner.invoke(
+        cli, ["--workspace-root", str(tmp_path), "workspace", "path", "NOPE-1"]
+    )
+
+    assert result.exit_code != 0

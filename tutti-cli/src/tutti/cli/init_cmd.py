@@ -107,3 +107,12 @@ def init(ctx: click.Context) -> None:
         success(f"Workspace initialised at {root}")
     else:
         success("Workspace already fully initialised — nothing to do.")
+
+    # Post-init guidance
+    output("")
+    output("[bold]Next steps:[/bold]")
+    output("  1. Set your Jira domain:  tutti config set jira.domain YOUR_DOMAIN.atlassian.net")
+    output("  2. Set environment variables:  export JIRA_EMAIL=... JIRA_TOKEN=...")
+    output("  3. (Optional) Set GH_TOKEN or run 'gh auth login' for GitHub sync")
+    output("  4. Run your first sync:  tutti sync --force")
+    output("  5. Check setup:  tutti doctor")

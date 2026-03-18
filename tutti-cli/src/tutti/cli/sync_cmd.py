@@ -2,29 +2,19 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import click
 
-from tutti.cli.output import error, output, success, warn
+from tutti.cli.output import debug, error, output, spinner, success, update_spinner, warn
+from tutti.cli.resolve import resolve_root
 from tutti.config import (
     AuthError,
     ConfigError,
-    find_workspace_root,
     gh_token,
     jira_email,
     jira_token,
     load_config,
 )
 from tutti.sync.base import SyncCoordinator
-
-
-def _resolve_root(ctx: click.Context) -> Path:
-    """Determine workspace root from context or by walking up the filesystem."""
-    root = ctx.obj.get("workspace_root") if ctx.obj else None
-    if root:
-        return Path(root).resolve()
-    return find_workspace_root()
 
 
 def _build_all_sources(cfg) -> tuple[list, list[tuple[str, str]]]:
@@ -36,6 +26,7 @@ def _build_all_sources(cfg) -> tuple[list, list[tuple[str, str]]]:
     try:
         from tutti.sync.jira import JiraSync
 
+        debug(f"jira: JQL = {cfg.jira_jql}")
         sources.append(JiraSync(
             domain=cfg.jira_domain,
             email=jira_email(),
@@ -68,16 +59,20 @@ def _build_all_sources(cfg) -> tuple[list, list[tuple[str, str]]]:
     return sources, skipped
 
 
-def _report_results(results):
-    """Print sync results."""
-    if not results:
-        output("No sync sources ran (all up to date or none configured).")
-        return
-    for r in results:
-        if r.errors:
-            error(f"{r.source}: {', '.join(r.errors)}")
+def _report_result(r):
+    """Print a single sync result as it completes."""
+    if r.errors:
+        error_count = len(r.errors)
+        ok_count = r.tickets_synced
+        if ok_count > 0:
+            warn(
+                f"{r.source}: synced {ok_count} tickets, "
+                f"{error_count} errors in {r.duration_seconds:.1f}s"
+            )
         else:
-            success(f"{r.source}: synced {r.tickets_synced} tickets in {r.duration_seconds:.1f}s")
+            error(f"{r.source}: {', '.join(r.errors)}")
+    else:
+        success(f"{r.source}: synced {r.tickets_synced} tickets in {r.duration_seconds:.1f}s")
 
 
 @click.group(invoke_without_command=True)
@@ -92,7 +87,7 @@ def sync(ctx: click.Context, force: bool) -> None:
         return
 
     try:
-        root = _resolve_root(ctx)
+        root = resolve_root(ctx)
         cfg = load_config(root)
     except ConfigError as exc:
         error(str(exc))
@@ -110,8 +105,29 @@ def sync(ctx: click.Context, force: bool) -> None:
     sources, skipped = _build_all_sources(cfg)
     for name, reason in skipped:
         warn(f"{name}: skipped ({reason})")
-    results = coordinator.run(sources, force=force)
-    _report_results(results)
+
+    with spinner("Syncing...") as status:
+        def on_start(name: str) -> None:
+            update_spinner(status, f"Syncing {name}...")
+
+        def on_result(r) -> None:
+            update_spinner(status, f"Syncing... ({r.source} done)")
+
+        results = coordinator.run(
+            sources, force=force, on_result=on_result, on_start=on_start
+        )
+
+    if not results:
+        # Show when each source was last synced
+        statuses = coordinator.all_source_statuses()
+        parts = [f"{s.name}: {s.age_human}" for s in statuses if s.last_sync > 0]
+        if parts:
+            output(f"Nothing to sync (all sources up to date). Last synced: {', '.join(parts)}")
+        else:
+            output("Nothing to sync (all sources up to date).")
+    else:
+        for r in results:
+            _report_result(r)
 
     total_synced = sum(r.tickets_synced for r in results)
     if total_synced == 0 and skipped:
@@ -122,7 +138,7 @@ def _run_single_source(ctx, source_factory):
     """Helper to run a single sync source."""
     force = ctx.obj.get("force", False)
     try:
-        root = _resolve_root(ctx)
+        root = resolve_root(ctx)
         cfg = load_config(root)
     except ConfigError as exc:
         error(str(exc))
@@ -137,8 +153,12 @@ def _run_single_source(ctx, source_factory):
         return
 
     coordinator = SyncCoordinator(root, {source.name: 0})
-    results = coordinator.run([source], force=force)
-    _report_results(results)
+
+    with spinner(f"Syncing {source.name}..."):
+        results = coordinator.run([source], force=force)
+
+    for r in results:
+        _report_result(r)
 
 
 @sync.command("jira")
@@ -204,3 +224,55 @@ def sync_workspace(ctx: click.Context) -> None:
         return WorkspaceSync()
 
     _run_single_source(ctx, factory)
+
+
+@sync.command("status")
+@click.pass_context
+def sync_status(ctx: click.Context) -> None:
+    """Show last sync time and staleness per source."""
+    try:
+        root = resolve_root(ctx)
+        cfg = load_config(root)
+    except ConfigError as exc:
+        error(str(exc))
+        ctx.exit(1)
+        return
+
+    intervals = {
+        "jira": cfg.sync_intervals.jira,
+        "github": cfg.sync_intervals.github,
+        "sessions": cfg.sync_intervals.sessions,
+        "workspace": cfg.sync_intervals.workspace,
+        "ci": cfg.sync_intervals.ci,
+    }
+    coordinator = SyncCoordinator(root, intervals)
+    statuses = coordinator.all_source_statuses()
+
+    from tutti.cli.output import Col, table
+    columns: list[str | Col] = [
+        "Source",
+        "Last Sync",
+        Col("Interval", justify="right"),
+        "Stale",
+    ]
+    rows = []
+    json_data = []
+    for s in statuses:
+        if s.interval < 60:
+            interval_human = f"{s.interval}s"
+        elif s.interval < 3600:
+            interval_human = f"{s.interval // 60}m"
+        else:
+            interval_human = f"{s.interval / 3600:.1f}h"
+        stale_str = "[red]yes[/red]" if s.is_stale else "[green]no[/green]"
+        rows.append([s.name, s.age_human, interval_human, stale_str])
+        json_data.append({
+            "source": s.name,
+            "last_sync": s.last_sync_iso,
+            "last_sync_epoch": s.last_sync,
+            "interval_seconds": s.interval,
+            "is_stale": s.is_stale,
+            "age_seconds": s.age_seconds if s.last_sync > 0 else None,
+        })
+
+    table("Sync Status", columns, rows, data=json_data)

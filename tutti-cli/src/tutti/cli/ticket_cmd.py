@@ -7,17 +7,11 @@ from pathlib import Path
 
 import click
 
-from tutti.cli.output import error, output, table
-from tutti.config import ConfigError, find_workspace_root
+from tutti.cli.output import Col, error, kv, output, section, table
+from tutti.cli.resolve import complete_ticket_key, resolve_root
+from tutti.config import ConfigError
 from tutti.markdown import extract_table, parse_frontmatter
 from tutti.workspace import enumerate_ticket_dirs, resolve_ticket_dir
-
-
-def _resolve_root(ctx: click.Context) -> Path:
-    root = ctx.obj.get("workspace_root") if ctx.obj else None
-    if root:
-        return Path(root).resolve()
-    return find_workspace_root()
 
 
 def _parse_ticket_md(content: str) -> dict[str, str]:
@@ -49,6 +43,22 @@ def _parse_ticket_md(content: str) -> dict[str, str]:
     return info
 
 
+def _read_priority_keys(root: Path) -> list[str]:
+    """Read PRIORITY.md and return ticket keys in priority order."""
+    priority_file = root / "PRIORITY.md"
+    if not priority_file.exists():
+        return []
+    keys: list[str] = []
+    from tutti.markdown import TICKET_KEY_PATTERN
+    for line in priority_file.read_text().splitlines():
+        line = line.strip()
+        if line.startswith("- "):
+            m = TICKET_KEY_PATTERN.search(line)
+            if m:
+                keys.append(m.group(0))
+    return keys
+
+
 @click.group()
 @click.pass_context
 def ticket(ctx: click.Context) -> None:
@@ -57,11 +67,28 @@ def ticket(ctx: click.Context) -> None:
 
 
 @ticket.command("list")
+@click.option(
+    "--category", default=None,
+    help="Filter by workflow category (e.g. 'Active Development').",
+)
+@click.option("--status", "status_filter", default=None, help="Filter by Jira status.")
+@click.option(
+    "--sort",
+    "sort_by",
+    default=None,
+    type=click.Choice(["priority", "key", "status", "category"]),
+    help="Sort results.",
+)
 @click.pass_context
-def ticket_list(ctx: click.Context) -> None:
+def ticket_list(
+    ctx: click.Context,
+    category: str | None,
+    status_filter: str | None,
+    sort_by: str | None,
+) -> None:
     """List all tracked tickets."""
     try:
-        root = _resolve_root(ctx)
+        root = resolve_root(ctx)
     except ConfigError as exc:
         error(str(exc))
         ctx.exit(1)
@@ -72,10 +99,8 @@ def ticket_list(ctx: click.Context) -> None:
         output("No tracked tickets.", data=[])
         return
 
-    columns = ["Key", "Summary", "Status", "Category"]
-    rows: list[list[str]] = []
-    json_data: list[dict[str, str]] = []
-
+    # Gather ticket info
+    entries: list[dict[str, str]] = []
     for key, path in tickets:
         ticket_md = path / "orchestrator" / "TICKET.md"
         info: dict[str, str] = {}
@@ -85,30 +110,55 @@ def ticket_list(ctx: click.Context) -> None:
             except Exception:
                 pass
 
-        row_key = info.get("key", key)
-        summary = info.get("summary", "")
-        status = info.get("status", "")
-        category = info.get("category", "")
-
-        rows.append([row_key, summary, status, category])
-        json_data.append({
-            "key": row_key,
-            "summary": summary,
-            "status": status,
-            "category": category,
+        entries.append({
+            "key": info.get("key", key),
+            "summary": info.get("summary", ""),
+            "status": info.get("status", ""),
+            "category": info.get("category", ""),
             "path": str(path),
         })
 
-    table("Tracked Tickets", columns, rows, data=json_data)
+    # Filter
+    if category:
+        cat_lower = category.lower()
+        entries = [e for e in entries if cat_lower in e["category"].lower()]
+    if status_filter:
+        st_lower = status_filter.lower()
+        entries = [e for e in entries if st_lower in e["status"].lower()]
+
+    # Sort
+    if sort_by == "priority":
+        priority_keys = _read_priority_keys(root)
+        priority_map = {k: i for i, k in enumerate(priority_keys)}
+        entries.sort(key=lambda e: priority_map.get(e["key"], len(priority_keys)))
+    elif sort_by == "key":
+        entries.sort(key=lambda e: e["key"])
+    elif sort_by == "status":
+        entries.sort(key=lambda e: e["status"])
+    elif sort_by == "category":
+        entries.sort(key=lambda e: e["category"])
+
+    if not entries:
+        output("No tickets match the filter.", data=[])
+        return
+
+    columns: list[str | Col] = [
+        Col("Key", no_wrap=True),
+        Col("Summary", max_width=50),
+        "Status",
+        "Category",
+    ]
+    rows = [[e["key"], e["summary"], e["status"], e["category"]] for e in entries]
+    table("Tracked Tickets", columns, rows, data=entries)
 
 
 @ticket.command("show")
-@click.argument("key")
+@click.argument("key", shell_complete=complete_ticket_key)
 @click.pass_context
 def ticket_show(ctx: click.Context, key: str) -> None:
     """Show ticket details and artifact inventory."""
     try:
-        root = _resolve_root(ctx)
+        root = resolve_root(ctx)
     except ConfigError as exc:
         error(str(exc))
         ctx.exit(1)
@@ -153,18 +203,57 @@ def ticket_show(ctx: click.Context, key: str) -> None:
         output("", data=json_data)
     else:
         if ticket_content:
-            output(ticket_content)
+            _meta, body = parse_frontmatter(ticket_content)
+            info = _parse_ticket_md(ticket_content)
+
+            # Heading -- strip the markdown H1 prefix
+            heading = info.get("key", key)
+            summary = info.get("summary", "")
+            if summary:
+                heading = f"{heading}: {summary}"
+            output(f"[bold]{heading}[/bold]")
+            output("")
+
+            # Metadata as aligned key-value pairs
+            for field in ("status", "category", "priority", "type", "assignee"):
+                val = info.get(field, "")
+                if val:
+                    kv(field.capitalize(), val)
+
+            # Description body -- strip heading and metadata table
+            desc_lines: list[str] = []
+            in_table = False
+            past_heading = False
+            for line in body.splitlines():
+                stripped = line.strip()
+                if not past_heading and re.match(r"^#\s+[A-Z]+-\d+:", stripped):
+                    past_heading = True
+                    continue
+                if stripped.startswith("| ") or stripped.startswith("|---"):
+                    in_table = True
+                    continue
+                if in_table and not stripped.startswith("|"):
+                    in_table = False
+                if not in_table and past_heading:
+                    desc_lines.append(line)
+
+            desc = "\n".join(desc_lines).strip()
+            if desc:
+                output("")
+                output(desc)
         else:
             output(f"[dim]No TICKET.md found for {key}.[/dim]")
 
         if artifacts:
-            output("\n[bold]Artifacts:[/bold]")
+            output("")
+            section("Artifacts")
             for a in artifacts:
                 output(f"  {a}")
         else:
             output("\n[dim]No artifacts.[/dim]")
 
         if repos:
-            output("\n[bold]Repo worktrees:[/bold]")
+            output("")
+            section("Repo worktrees")
             for r in repos:
                 output(f"  {r}")

@@ -8,22 +8,16 @@ from pathlib import Path
 import click
 
 from tutti.cli.output import error, output, success, table
-from tutti.config import ConfigError, find_workspace_root
+from tutti.cli.resolve import complete_ticket_key, resolve_root
+from tutti.config import ConfigError
 from tutti.markdown import TICKET_KEY_PATTERN
-from tutti.workspace import restore_ticket
-
-
-def _resolve_root(ctx: click.Context) -> Path:
-    root = ctx.obj.get("workspace_root") if ctx.obj else None
-    if root:
-        return Path(root).resolve()
-    return find_workspace_root()
+from tutti.workspace import archive_ticket, resolve_ticket_dir, restore_ticket
 
 
 def _list_archived(ctx: click.Context) -> None:
     """List all archived tickets."""
     try:
-        root = _resolve_root(ctx)
+        root = resolve_root(ctx)
     except ConfigError as exc:
         error(str(exc))
         ctx.exit(1)
@@ -68,14 +62,41 @@ def archive_list(ctx: click.Context) -> None:
     _list_archived(ctx)
 
 
+@archive.command("add")
+@click.argument("key", shell_complete=complete_ticket_key)
+@click.pass_context
+def archive_add(ctx: click.Context, key: str) -> None:
+    """Archive a ticket (move it to .archive/)."""
+    try:
+        root = resolve_root(ctx)
+    except ConfigError as exc:
+        error(str(exc))
+        ctx.exit(1)
+        return
+
+    ticket_dir = resolve_ticket_dir(root, key)
+    if not ticket_dir:
+        error(f"Ticket {key} not found in workspace.")
+        ctx.exit(1)
+        return
+
+    result = archive_ticket(root, key)
+    if result is None:
+        error(f"Failed to archive {key}.")
+        ctx.exit(1)
+        return
+
+    success(f"Archived {key} to {result}")
+
+
 @archive.command("restore")
-@click.argument("key")
+@click.argument("key", shell_complete=complete_ticket_key)
 @click.option("--epic", default=None, help="Epic key to restore under.")
 @click.pass_context
 def archive_restore(ctx: click.Context, key: str, epic: str | None) -> None:
     """Restore an archived ticket to the workspace."""
     try:
-        root = _resolve_root(ctx)
+        root = resolve_root(ctx)
     except ConfigError as exc:
         error(str(exc))
         ctx.exit(1)

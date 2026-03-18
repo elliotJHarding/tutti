@@ -82,6 +82,35 @@ class TestArchiveList:
         assert "ERSC-300" in result.output
 
 
+class TestArchiveAdd:
+    def test_add_existing_ticket(self, tmp_path: Path) -> None:
+        _init_workspace(tmp_path)
+        # Create a ticket directory in the workspace
+        ticket_dir = tmp_path / "ERSC-100-some-task"
+        (ticket_dir / "orchestrator").mkdir(parents=True)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli, ["--workspace-root", str(tmp_path), "archive", "add", "ERSC-100"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "Archived" in result.output
+        assert (tmp_path / ".archive" / "ERSC-100-some-task").is_dir()
+        assert not ticket_dir.exists()
+
+    def test_add_missing_ticket(self, tmp_path: Path) -> None:
+        _init_workspace(tmp_path)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli, ["--workspace-root", str(tmp_path), "archive", "add", "ERSC-999"]
+        )
+
+        assert result.exit_code != 0
+        assert "not found" in result.output.lower()
+
+
 class TestArchiveRestore:
     def test_restore_existing(self, tmp_path: Path) -> None:
         _init_workspace(tmp_path)

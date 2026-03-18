@@ -2,20 +2,30 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import click
 import yaml
 
-from tutti.cli.output import error, output
-from tutti.config import ConfigError, find_workspace_root, load_config
+from tutti.cli.output import error, output, success, syntax
+from tutti.cli.resolve import resolve_root
+from tutti.config import (
+    ConfigError,
+    WorkspaceConfig,
+    _sync_intervals_to_dict,
+    _trust_to_dict,
+    load_config,
+)
 
 
-def _resolve_root(ctx: click.Context) -> Path:
-    root = ctx.obj.get("workspace_root") if ctx.obj else None
-    if root:
-        return Path(root).resolve()
-    return find_workspace_root()
+def _config_to_full_dict(cfg: WorkspaceConfig) -> dict:
+    """Convert the full config to a display dict including trust and intervals."""
+    return {
+        "root": str(cfg.root),
+        "jira_domain": cfg.jira_domain,
+        "jira_jql": cfg.jira_jql,
+        "repo_paths": [str(p) for p in cfg.repo_paths],
+        "trust": _trust_to_dict(cfg.trust),
+        "sync_intervals": _sync_intervals_to_dict(cfg.sync_intervals),
+    }
 
 
 @click.group(invoke_without_command=True)
@@ -26,20 +36,14 @@ def config(ctx: click.Context) -> None:
         return
 
     try:
-        root = _resolve_root(ctx)
+        root = resolve_root(ctx)
         cfg = load_config(root)
     except ConfigError as exc:
         error(str(exc))
         ctx.exit(1)
         return
 
-    # Display current config
-    data = {
-        "root": str(cfg.root),
-        "jira_domain": cfg.jira_domain,
-        "jira_jql": cfg.jira_jql,
-        "repo_paths": [str(p) for p in cfg.repo_paths],
-    }
+    data = _config_to_full_dict(cfg)
 
     json_mode = ctx.obj.get("json", False) if ctx.obj else False
     if json_mode:
@@ -49,7 +53,29 @@ def config(ctx: click.Context) -> None:
         json.dump(data, sys.stdout)
         sys.stdout.write("\n")
     else:
-        output(yaml.dump(data, default_flow_style=False, sort_keys=False))
+        syntax(yaml.dump(data, default_flow_style=False, sort_keys=False), "yaml")
+
+
+# Dotted key path -> (yaml section, yaml key) mapping for config set.
+_SETTABLE_KEYS = {
+    "jira.domain": ("jira", "domain"),
+    "jira.jql": ("jira", "jql"),
+    "trust.writeArtifact": ("trust", "writeArtifact"),
+    "trust.gitCommit": ("trust", "gitCommit"),
+    "trust.gitPush": ("trust", "gitPush"),
+    "trust.jiraComment": ("trust", "jiraComment"),
+    "trust.jiraTransition": ("trust", "jiraTransition"),
+    "trust.prCreate": ("trust", "prCreate"),
+    "trust.prMerge": ("trust", "prMerge"),
+    "trust.timeLog": ("trust", "timeLog"),
+    "syncIntervals.jira": ("syncIntervals", "jira"),
+    "syncIntervals.github": ("syncIntervals", "github"),
+    "syncIntervals.sessions": ("syncIntervals", "sessions"),
+    "syncIntervals.workspace": ("syncIntervals", "workspace"),
+    "syncIntervals.ci": ("syncIntervals", "ci"),
+}
+
+_TRUST_VALUES = {"auto", "propose", "deny"}
 
 
 @config.command("set")
@@ -57,5 +83,144 @@ def config(ctx: click.Context) -> None:
 @click.argument("value")
 @click.pass_context
 def config_set(ctx: click.Context, key: str, value: str) -> None:
-    """Set a configuration value."""
-    output("Not yet implemented.")
+    """Set a configuration value using dotted key paths.
+
+    Examples:
+        tutti config set jira.domain mycompany.atlassian.net
+        tutti config set trust.gitCommit auto
+        tutti config set syncIntervals.jira 7200
+    """
+    if key not in _SETTABLE_KEYS:
+        valid = ", ".join(sorted(_SETTABLE_KEYS))
+        error(f"Unknown config key '{key}'. Valid keys: {valid}")
+        ctx.exit(1)
+        return
+
+    try:
+        root = resolve_root(ctx)
+    except ConfigError as exc:
+        error(str(exc))
+        ctx.exit(1)
+        return
+
+    # Read raw YAML to preserve structure
+    config_path = root / "config.yaml"
+    if config_path.exists():
+        raw = yaml.safe_load(config_path.read_text()) or {}
+    else:
+        raw = {}
+
+    section, yaml_key = _SETTABLE_KEYS[key]
+
+    # Validate trust values
+    if section == "trust":
+        if value not in _TRUST_VALUES:
+            valid = ", ".join(sorted(_TRUST_VALUES))
+            error(f"Invalid trust level '{value}'. Must be one of: {valid}")
+            ctx.exit(1)
+            return
+
+    # Validate interval values
+    if section == "syncIntervals":
+        try:
+            value = int(value)  # type: ignore[assignment]
+        except ValueError:
+            error(f"Interval value must be an integer (seconds), got '{value}'")
+            ctx.exit(1)
+            return
+
+    # Set the value
+    if section not in raw:
+        raw[section] = {}
+    raw[section][yaml_key] = value
+
+    config_path.write_text(yaml.dump(raw, default_flow_style=False, sort_keys=False))
+    success(f"{key} = {value}")
+
+
+@config.command("add-repo-path")
+@click.argument("path")
+@click.pass_context
+def config_add_repo_path(ctx: click.Context, path: str) -> None:
+    """Add a directory to the repoPaths list.
+
+    Examples:
+        tutti config add-repo-path ~/workspace
+        tutti config add-repo-path /opt/repos
+    """
+    try:
+        root = resolve_root(ctx)
+    except ConfigError as exc:
+        error(str(exc))
+        ctx.exit(1)
+        return
+
+    from pathlib import Path as P
+    resolved = str(P(path).expanduser().resolve())
+
+    config_path = root / "config.yaml"
+    if config_path.exists():
+        raw = yaml.safe_load(config_path.read_text()) or {}
+    else:
+        raw = {}
+
+    repo_paths = raw.get("repoPaths", [])
+    # Normalise existing entries for comparison
+    existing = [str(P(p).expanduser().resolve()) for p in repo_paths]
+    if resolved in existing:
+        error(f"'{path}' is already in repoPaths.")
+        ctx.exit(1)
+        return
+
+    repo_paths.append(path)
+    raw["repoPaths"] = repo_paths
+    config_path.write_text(yaml.dump(raw, default_flow_style=False, sort_keys=False))
+    success(f"Added '{path}' to repoPaths. Current: {', '.join(repo_paths)}")
+
+
+@config.command("remove-repo-path")
+@click.argument("path")
+@click.pass_context
+def config_remove_repo_path(ctx: click.Context, path: str) -> None:
+    """Remove a directory from the repoPaths list.
+
+    Examples:
+        tutti config remove-repo-path ~/projects
+    """
+    try:
+        root = resolve_root(ctx)
+    except ConfigError as exc:
+        error(str(exc))
+        ctx.exit(1)
+        return
+
+    from pathlib import Path as P
+    resolved = str(P(path).expanduser().resolve())
+
+    config_path = root / "config.yaml"
+    if config_path.exists():
+        raw = yaml.safe_load(config_path.read_text()) or {}
+    else:
+        raw = {}
+
+    repo_paths = raw.get("repoPaths", [])
+    # Find and remove by resolved path comparison
+    new_paths = []
+    removed = False
+    for p in repo_paths:
+        if str(P(p).expanduser().resolve()) == resolved:
+            removed = True
+        else:
+            new_paths.append(p)
+
+    if not removed:
+        error(f"'{path}' not found in repoPaths. Current: {', '.join(repo_paths)}")
+        ctx.exit(1)
+        return
+
+    raw["repoPaths"] = new_paths
+    config_path.write_text(yaml.dump(raw, default_flow_style=False, sort_keys=False))
+    if new_paths:
+        success(f"Removed '{path}' from repoPaths. Remaining: {', '.join(new_paths)}")
+    else:
+        success(f"Removed '{path}' from repoPaths. List is now empty.")

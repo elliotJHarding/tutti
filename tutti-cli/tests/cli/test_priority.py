@@ -99,3 +99,52 @@ def test_priority_json_output(tmp_path: Path) -> None:
     assert result.exit_code == 0, result.output
     data = json.loads(result.output.strip())
     assert "content" in data
+
+
+def test_priority_add_appends(tmp_path: Path) -> None:
+    """priority add should append a key to the end of the list."""
+    runner = CliRunner()
+    _init_workspace(runner, tmp_path)
+
+    runner.invoke(cli, ["--workspace-root", str(tmp_path), "priority", "set", "AAA-1"])
+    result = runner.invoke(
+        cli, ["--workspace-root", str(tmp_path), "priority", "add", "BBB-2"]
+    )
+
+    assert result.exit_code == 0, result.output
+    content = (tmp_path / "PRIORITY.md").read_text()
+    assert "- AAA-1" in content
+    assert "- BBB-2" in content
+    # BBB-2 should come after AAA-1
+    assert content.index("AAA-1") < content.index("BBB-2")
+
+
+def test_priority_remove_existing(tmp_path: Path) -> None:
+    """priority remove should remove a key from the list."""
+    runner = CliRunner()
+    _init_workspace(runner, tmp_path)
+
+    runner.invoke(
+        cli, ["--workspace-root", str(tmp_path), "priority", "set", "AAA-1", "BBB-2"]
+    )
+    result = runner.invoke(
+        cli, ["--workspace-root", str(tmp_path), "priority", "remove", "AAA-1"]
+    )
+
+    assert result.exit_code == 0, result.output
+    content = (tmp_path / "PRIORITY.md").read_text()
+    assert "AAA-1" not in content
+    assert "- BBB-2" in content
+
+
+def test_priority_remove_missing(tmp_path: Path) -> None:
+    """priority remove for a key not in the list should warn."""
+    runner = CliRunner()
+    _init_workspace(runner, tmp_path)
+
+    result = runner.invoke(
+        cli, ["--workspace-root", str(tmp_path), "priority", "remove", "ZZZ-99"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "not in" in result.output.lower()
