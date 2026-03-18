@@ -7,8 +7,6 @@ from dataclasses import dataclass, field, fields
 from pathlib import Path
 from typing import Any, Literal
 
-import yaml
-
 from tutti.exceptions import AuthError, ConfigError
 
 TrustLevel = Literal["auto", "propose", "deny"]
@@ -110,6 +108,8 @@ def load_config(root: Path) -> WorkspaceConfig:
     if not config_path.exists():
         return WorkspaceConfig(root=root)
 
+    import yaml
+
     try:
         raw = yaml.safe_load(config_path.read_text()) or {}
     except yaml.YAMLError as exc:
@@ -142,6 +142,8 @@ def load_config(root: Path) -> WorkspaceConfig:
 
 def save_config(config: WorkspaceConfig, root: Path) -> None:
     """Write *config* as config.yaml inside *root*."""
+    import yaml
+
     root.mkdir(parents=True, exist_ok=True)
     data: dict[str, Any] = {
         "workspace": {
