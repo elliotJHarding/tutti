@@ -1,0 +1,22 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "duct-tui"
+version = "0.1.0"
+description = "Terminal UI for duct workspace management"
+requires-python = ">=3.11"
+dependencies = [
+    "textual>=3.0",
+    "duct",
+]
+
+[project.optional-dependencies]
+dev = ["textual-dev", "pytest", "ruff"]
+
+[project.scripts]
+duct-tui = "duct_tui.app:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/duct_tui"]

@@ -1,8 +1,8 @@
-# tutti — Specification
+# duct — Specification
 
-This is a living document. It captures the philosophy, data model, and intended behaviour of tutti. It should be refined collaboratively before and during implementation. Where details are unresolved, they are marked as open questions.
+This is a living document. It captures the philosophy, data model, and intended behaviour of duct. It should be refined collaboratively before and during implementation. Where details are unresolved, they are marked as open questions.
 
-tutti is a developer workflow tool that keeps agentic software development moving. It syncs data from external systems (Jira, GitHub) into a ticket-centric folder structure, and provides an AI orchestrator that reviews the state of active work, proposes next steps, and produces artifacts. The developer and orchestrator share a filesystem — either can do work, and the system derives state from what actually exists.
+duct is a developer workflow tool that keeps agentic software development moving. It syncs data from external systems (Jira, GitHub) into a ticket-centric folder structure, and provides an AI orchestrator that reviews the state of active work, proposes next steps, and produces artifacts. The developer and orchestrator share a filesystem — either can do work, and the system derives state from what actually exists.
 
 
 ## Core Principles
@@ -13,7 +13,7 @@ These are the foundational commitments that shape every design decision. If a pr
 
 All state lives as markdown and YAML files in a hierarchical folder structure. There is no SQLite database, no proprietary format, no binary blobs. The folder structure is the data model.
 
-This means a developer can inspect, edit, and diff everything tutti knows using standard tools — a text editor, `grep`, `git diff`. The tool enhances the data but never owns it exclusively. If tutti stops running, the data remains useful and navigable.
+This means a developer can inspect, edit, and diff everything duct knows using standard tools — a text editor, `grep`, `git diff`. The tool enhances the data but never owns it exclusively. If duct stops running, the data remains useful and navigable.
 
 This is a deliberate departure from the previous Houston implementation, which used SQLite and required the application to access its own state. That made the data opaque and tightly coupled to the UI.
 
@@ -27,11 +27,11 @@ This principle extends to the sync layer. Sync reads external systems and writes
 
 ### The orchestrator is a Claude Code agent
 
-The orchestrator is not a script that assembles prompts and pipes them to an API. It is a Claude Code session, launched with `--add-dir` pointing at the tutti workspace. It has access to Read, Glob, Grep, Write, and Edit — the same tools any Claude Code session uses to navigate and modify a codebase.
+The orchestrator is not a script that assembles prompts and pipes them to an API. It is a Claude Code session, launched with `--add-dir` pointing at the duct workspace. It has access to Read, Glob, Grep, Write, and Edit — the same tools any Claude Code session uses to navigate and modify a codebase.
 
 The orchestrator is given its goals and workflow guidance in its system prompt (via WORKFLOW.md and its launch configuration). It is not given ticket data in the prompt. It reads ticket data by exploring the filesystem, the same way a developer would browse the folder structure. This means the orchestrator scales naturally — it reads what it needs, when it needs it, rather than being front-loaded with everything.
 
-This is a fundamental shift from the Houston orchestrator, which assembled a large prompt containing a ticket index, signals, pending actions, and rejected actions. That approach hit context limits and required careful prompt engineering. The tutti orchestrator sidesteps this by treating the filesystem as its context.
+This is a fundamental shift from the Houston orchestrator, which assembled a large prompt containing a ticket index, signals, pending actions, and rejected actions. That approach hit context limits and required careful prompt engineering. The duct orchestrator sidesteps this by treating the filesystem as its context.
 
 ### No rigid stages
 
@@ -68,7 +68,7 @@ Markdown with YAML frontmatter. No binary formats, no proprietary schemas, no da
 
 ## The Workspace
 
-The tutti workspace is a configurable root directory that contains all active work. It is not a hidden config directory — it is the developer's actual workspace. Code is written here.
+The duct workspace is a configurable root directory that contains all active work. It is not a hidden config directory — it is the developer's actual workspace. Code is written here.
 
 ### Folder structure
 
@@ -115,7 +115,7 @@ The tutti workspace is a configurable root directory that contains all active wo
 
 ### Workspace root
 
-The workspace root is configurable. It defaults to `~/workspace/tutti/` but can be set in config. Everything the system manages lives under this root.
+The workspace root is configurable. It defaults to `~/workspace/duct/` but can be set in config. Everything the system manages lives under this root.
 
 ### Ticket directories
 
@@ -129,7 +129,7 @@ Each ticket directory contains an `orchestrator/` subdirectory. This is where al
 
 Repositories live as git worktrees directly inside the ticket directory. `repo-1/` is a real git worktree where the developer writes code. The workspace IS the developer's workspace — there is no separate "code goes here" location.
 
-Worktrees are created during workspace setup. The orchestrator (or developer) determines which repositories need changes for a given ticket and creates ticket-specific worktrees with appropriately named branches. tutti uses the developer's existing clones rather than managing bare repos — config specifies `repoPaths` (e.g. `['~/workspace', '~/projects']`) which tutti searches to find local clones. If a repo isn't found locally, it can be cloned on demand.
+Worktrees are created during workspace setup. The orchestrator (or developer) determines which repositories need changes for a given ticket and creates ticket-specific worktrees with appropriately named branches. duct uses the developer's existing clones rather than managing bare repos — config specifies `repoPaths` (e.g. `['~/workspace', '~/projects']`) which duct searches to find local clones. If a repo isn't found locally, it can be cloned on demand.
 
 Workspace creation is collaborative: the orchestrator proposes repos and branches, the developer can granularly accept, modify, or add repos manually.
 
@@ -182,7 +182,7 @@ Sessions are discovered from two locations:
 - `~/.claude/sessions/*.json` — Registry files for currently running sessions. Each file is named by PID and contains the session ID, working directory, and start time. Stale registry files (where the PID is no longer alive) are ignored.
 - `~/.claude/projects/{encoded-cwd}/{sessionId}.jsonl` — Full conversation transcripts. The encoded-cwd is derived from the session's working directory (leading `/` stripped, remaining `/` replaced with `-`). These persist after a session ends.
 
-Sessions are matched to tickets by extracting ticket keys from the working directory path (regex: `[A-Z]+-\d+`). A session whose cwd is `/Users/dev/workspace/tutti/ERSC-1278-fix-auth/ice-claims` matches ticket ERSC-1278.
+Sessions are matched to tickets by extracting ticket keys from the working directory path (regex: `[A-Z]+-\d+`). A session whose cwd is `/Users/dev/workspace/duct/ERSC-1278-fix-auth/ice-claims` matches ticket ERSC-1278.
 
 **What gets extracted from transcripts**
 
@@ -227,7 +227,7 @@ The body is structured markdown — tables, headings, lists — formatted for bo
 
 ## The Orchestrator
 
-The orchestrator is a Claude Code session that reviews the state of the tutti workspace and takes action to keep work moving.
+The orchestrator is a Claude Code session that reviews the state of the duct workspace and takes action to keep work moving.
 
 ### How it launches
 
@@ -274,7 +274,7 @@ The format is deliberately simple (a markdown list of ticket keys with optional 
 ### Triggering
 
 The orchestrator can be triggered:
-- **Manually** — `tutti orchestrate` runs a single orchestration cycle
+- **Manually** — `duct orchestrate` runs a single orchestration cycle
 - **Scheduled** — a cron job or daemon runs it on an interval
 
 Manual triggering is the primary mode during early development. Scheduled runs are an opt-in as the system matures and trust builds.
@@ -334,7 +334,7 @@ Configuration lives in `config.yaml` at the workspace root. Key fields:
 
 ```yaml
 workspace:
-  root: ~/workspace/tutti
+  root: ~/workspace/duct
 
 jira:
   jql: "assignee = currentUser() AND status != Done ORDER BY updated DESC"
@@ -365,7 +365,7 @@ The `--allowedTools` passed to the orchestrator's Claude Code session are derive
 
 ### Repo paths
 
-`repoPaths` tells tutti where to search for existing local clones when setting up worktrees. It walks these directories looking for repos that match what a ticket needs. This avoids tutti managing its own clones — it uses whatever the developer already has checked out.
+`repoPaths` tells duct where to search for existing local clones when setting up worktrees. It walks these directories looking for repos that match what a ticket needs. This avoids duct managing its own clones — it uses whatever the developer already has checked out.
 
 ### Auth
 
@@ -378,14 +378,14 @@ The CLI is the core interface. All functionality is exposed through it. TUIs are
 
 ### Architecture
 
-tutti is a Python package (`tutti-cli/src/tutti/`) with a library-first design. The library exposes a public API that any consumer can import directly. The CLI is a thin wrapper around the library, not the other way around.
+duct is a Python package (`duct-cli/src/duct/`) with a library-first design. The library exposes a public API that any consumer can import directly. The CLI is a thin wrapper around the library, not the other way around.
 
 All commands support a `--json` flag for structured output, making the CLI usable as a machine interface. A Python TUI imports the library directly. A Rust TUI (or any other consumer) can use subprocess + JSON output.
 
 ### Commands
 
 ```
-tutti
+duct
     init                    Create config.yaml, PRIORITY.md, WORKFLOW.md, .claude/
     config                  View/edit workspace configuration
 
@@ -414,14 +414,14 @@ tutti
     priority set            Set the priority list
 ```
 
-`tutti init` creates the workspace skeleton only — config.yaml, PRIORITY.md, WORKFLOW.md, and the `.claude/` directory. It does not sync. The developer runs `tutti sync` separately as a distinct step. This keeps init fast and predictable.
+`duct init` creates the workspace skeleton only — config.yaml, PRIORITY.md, WORKFLOW.md, and the `.claude/` directory. It does not sync. The developer runs `duct sync` separately as a distinct step. This keeps init fast and predictable.
 
 Command details, arguments, and flags will be specified during implementation.
 
 
 ## TUI
 
-The TUI is a separate project built on top of the CLI. There may be multiple TUI implementations (Rust, Python) sharing the same underlying CLI and data model. The TUI provides a visual dashboard for browsing tickets, viewing artifacts, monitoring sync status, and interacting with the orchestrator. A Python TUI imports the tutti library directly. A Rust TUI uses subprocess calls to the CLI with `--json` output.
+The TUI is a separate project built on top of the CLI. There may be multiple TUI implementations (Rust, Python) sharing the same underlying CLI and data model. The TUI provides a visual dashboard for browsing tickets, viewing artifacts, monitoring sync status, and interacting with the orchestrator. A Python TUI imports the duct library directly. A Rust TUI uses subprocess calls to the CLI with `--json` output.
 
 
 ## Open Questions
@@ -430,7 +430,7 @@ These are unresolved decisions. They should be discussed and resolved before or 
 
 - **Conflict handling** — What happens if the developer and orchestrator edit the same authored file simultaneously? Current assumption is this is rare enough to handle manually. May need file-level locking or last-write-wins with git history as recovery.
 
-- **Multi-developer** — How does the system behave when two developers work on the same tutti workspace? Is the workspace per-developer or shared? PRIORITY.md assumes a single developer's focus.
+- **Multi-developer** — How does the system behave when two developers work on the same duct workspace? Is the workspace per-developer or shared? PRIORITY.md assumes a single developer's focus.
 
 - **Session resumption** — The orchestrator runs as discrete sessions. How much continuity does it maintain between runs? ORCHESTRATOR.md serves as its memory, but should there be a more structured "last run summary" mechanism?
 

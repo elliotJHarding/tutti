@@ -1,0 +1,86 @@
+"""Tests for the duct init command."""
+
+from pathlib import Path
+
+import yaml
+from click.testing import CliRunner
+
+from duct.cli.main import cli
+
+
+def test_init_creates_all_files(tmp_path: Path) -> None:
+    """init should create config.yaml, PRIORITY.md, WORKFLOW.md, and .claude/CLAUDE.md."""
+    runner = CliRunner()
+    result = runner.invoke(cli, ["--workspace-root", str(tmp_path), "init"])
+
+    assert result.exit_code == 0, result.output
+    assert (tmp_path / "config.yaml").exists()
+    assert (tmp_path / "PRIORITY.md").exists()
+    assert (tmp_path / "WORKFLOW.md").exists()
+    assert (tmp_path / ".claude" / "CLAUDE.md").exists()
+
+
+def test_init_is_idempotent(tmp_path: Path) -> None:
+    """Running init twice should not overwrite existing files."""
+    runner = CliRunner()
+
+    # First run — creates files
+    runner.invoke(cli, ["--workspace-root", str(tmp_path), "init"])
+
+    # Write custom content to PRIORITY.md
+    priority_path = tmp_path / "PRIORITY.md"
+    custom_content = "# My Custom Priorities\n"
+    priority_path.write_text(custom_content)
+
+    # Second run — should not overwrite
+    result = runner.invoke(cli, ["--workspace-root", str(tmp_path), "init"])
+    assert result.exit_code == 0, result.output
+    assert priority_path.read_text() == custom_content
+
+
+def test_init_respects_workspace_root(tmp_path: Path) -> None:
+    """init should create files in the directory specified by --workspace-root."""
+    target = tmp_path / "custom" / "workspace"
+    runner = CliRunner()
+    result = runner.invoke(cli, ["--workspace-root", str(target), "init"])
+
+    assert result.exit_code == 0, result.output
+    assert (target / "config.yaml").exists()
+    assert (target / "PRIORITY.md").exists()
+
+
+def test_init_config_yaml_is_valid(tmp_path: Path) -> None:
+    """The generated config.yaml should be valid YAML."""
+    runner = CliRunner()
+    runner.invoke(cli, ["--workspace-root", str(tmp_path), "init"])
+
+    config_path = tmp_path / "config.yaml"
+    data = yaml.safe_load(config_path.read_text())
+    assert isinstance(data, dict)
+    assert "workspace" in data
+    assert "jira" in data
+
+
+def test_init_priority_md_has_expected_content(tmp_path: Path) -> None:
+    """PRIORITY.md should contain the template header and comment."""
+    runner = CliRunner()
+    runner.invoke(cli, ["--workspace-root", str(tmp_path), "init"])
+
+    content = (tmp_path / "PRIORITY.md").read_text()
+    assert "# Priority" in content
+    assert "ticket keys" in content.lower() or "priority order" in content.lower()
+
+
+def test_init_json_output(tmp_path: Path) -> None:
+    """init with --json should produce JSON output containing created files."""
+    runner = CliRunner()
+    result = runner.invoke(cli, ["--json", "--workspace-root", str(tmp_path), "init"])
+
+    assert result.exit_code == 0, result.output
+    # JSON mode should produce parseable output
+    import json
+
+    lines = [line for line in result.output.strip().splitlines() if line.strip()]
+    assert len(lines) >= 1
+    data = json.loads(lines[0])
+    assert "created" in data
