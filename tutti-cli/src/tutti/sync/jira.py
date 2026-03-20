@@ -9,11 +9,13 @@ from pathlib import Path
 
 import httpx
 
+from tutti.config import SandboxConfig
 from tutti.exceptions import AuthError, SyncError
 from tutti.markdown import atomic_write, generate_frontmatter
 from tutti.models import Comment, SyncResult, Ticket
+from tutti.sandbox import write_settings
 from tutti.sync.adf import adf_to_markdown
-from tutti.workspace import archive_ticket, ensure_ticket_dir, enumerate_ticket_dirs
+from tutti.workspace import archive_ticket, ensure_epic_link, ensure_ticket_dir, enumerate_ticket_dirs
 
 _SEARCH_FIELDS = (
     "summary,status,priority,issuetype,assignee,project,parent,"
@@ -52,7 +54,7 @@ class JiraSync:
 
     name = "jira"
 
-    def __init__(self, domain: str, email: str, token: str, jql: str):
+    def __init__(self, domain: str, email: str, token: str, jql: str, sandbox: SandboxConfig | None = None):
         if not domain:
             raise AuthError("Jira domain is not configured")
         if not email:
@@ -62,6 +64,7 @@ class JiraSync:
 
         self._domain = domain
         self._jql = jql
+        self._sandbox = sandbox
         self._base_url = f"https://{domain}/rest/api/3"
 
         credentials = base64.b64encode(f"{email}:{token}".encode()).decode()
@@ -142,11 +145,11 @@ class JiraSync:
             epic_summary = epic_summaries.get(epic_key, epic_key) if epic_key else None
 
             try:
-                ticket_dir = ensure_ticket_dir(
-                    root, key, ticket.summary,
-                    epic_key=epic_key,
-                    epic_summary=epic_summary,
-                )
+                ticket_dir = ensure_ticket_dir(root, key, ticket.summary)
+                if self._sandbox and self._sandbox.enabled:
+                    write_settings(ticket_dir, self._sandbox)
+                if epic_key:
+                    ensure_epic_link(root, ticket_dir, epic_key, epic_summary)
                 self._write_ticket_md(ticket, ticket_dir)
                 synced += 1
             except Exception as exc:

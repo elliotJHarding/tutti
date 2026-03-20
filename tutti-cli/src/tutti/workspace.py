@@ -1,21 +1,21 @@
 """Workspace directory layout helpers for tutti.
 
-The workspace is a tree of ticket directories, optionally grouped under epic
-directories.  Both kinds of directory are named ``{KEY}-{slug}``, where KEY is
-a Jira-style ticket key (e.g. ERSC-1278).
+Ticket directories live directly under the workspace root, named
+``{KEY}-{slug}`` where KEY is a Jira-style ticket key (e.g. ERSC-1278).
 
-A "ticket directory" is a leaf that contains an ``orchestrator/`` subdirectory.
-An "epic directory" is one that itself matches the key pattern *and* contains
-nested ticket directories.
+A "ticket directory" contains an ``orchestrator/`` subdirectory.
+Epic metadata lives in ``{root}/epics/`` as markdown files, and each ticket's
+``orchestrator/`` directory optionally symlinks ``EPIC.md`` to its parent epic file.
 """
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 from pathlib import Path
 
-from tutti.markdown import TICKET_KEY_PATTERN
+from tutti.markdown import TICKET_KEY_PATTERN, generate_frontmatter
 
 _SLUG_STRIP_RE = re.compile(r"[^a-z0-9]+")
 
@@ -28,6 +28,33 @@ def slug(text: str) -> str:
     """Convert *text* to a lowercase URL-style slug (a-z, 0-9, hyphens)."""
     s = _SLUG_STRIP_RE.sub("-", text.lower())
     return s.strip("-")
+
+
+def branch_name(key: str, summary: str, issue_type: str) -> str:
+    """Build a branch name like ``feature/ERSC-1278-case-file-updates``.
+
+    Uses ``bugfix/`` for PS- project tickets or Bug issue types, ``feature/``
+    for everything else.  Truncated to 80 characters.
+    """
+    prefix = "bugfix" if key.startswith("PS-") or issue_type.lower() == "bug" else "feature"
+    return f"{prefix}/{key.upper()}-{slug(summary)}"[:80]
+
+
+def read_issue_type(ticket_dir: Path) -> str:
+    """Read the issue type from ``orchestrator/TICKET.md``.
+
+    Returns the type string (e.g. ``"Story"``, ``"Bug"``), or an empty string
+    if the file is missing or the field is not found.
+    """
+    ticket_md = ticket_dir / "orchestrator" / "TICKET.md"
+    if not ticket_md.exists():
+        return ""
+    for line in ticket_md.read_text().splitlines():
+        if line.strip().startswith("| Type |"):
+            parts = line.split("|")
+            if len(parts) >= 3:
+                return parts[2].strip()
+    return ""
 
 
 def ticket_dir_name(key: str, summary: str) -> str:
@@ -59,35 +86,16 @@ def _is_ticket_dir(path: Path) -> bool:
     return path.is_dir() and (path / "orchestrator").is_dir()
 
 
-def _contains_ticket_dirs(path: Path) -> bool:
-    """True when *path* contains at least one child that is a ticket dir."""
-    if not path.is_dir():
-        return False
-    for child in path.iterdir():
-        if child.is_dir() and _key_from_dirname(child.name) and _is_ticket_dir(child):
-            return True
-    return False
-
-
 def resolve_ticket_dir(root: Path, key: str) -> Path | None:
     """Find an existing ticket directory for *key* under *root*.
 
-    Searches both the root level and one level of epic subdirectories.
+    Only scans the root level (flat layout).
     Returns the path if found, otherwise None.
     """
     prefix = f"{key}-"
-    # Check root-level dirs.
     for child in sorted(root.iterdir()):
-        if child.is_dir() and child.name.startswith(prefix):
-            if _is_ticket_dir(child):
-                return child
-    # Check inside epic dirs (one level deep).
-    for epic in sorted(root.iterdir()):
-        if not epic.is_dir() or not _key_from_dirname(epic.name):
-            continue
-        for child in sorted(epic.iterdir()):
-            if child.is_dir() and child.name.startswith(prefix) and _is_ticket_dir(child):
-                return child
+        if child.is_dir() and child.name.startswith(prefix) and _is_ticket_dir(child):
+            return child
     return None
 
 
@@ -99,30 +107,17 @@ def ensure_ticket_dir(
     root: Path,
     key: str,
     summary: str,
-    epic_key: str | None = None,
-    epic_summary: str | None = None,
 ) -> Path:
-    """Create (or relocate) a ticket directory under *root* and return its path.
+    """Create a ticket directory directly under *root* and return its path.
 
-    When *epic_key* is provided the ticket is placed inside the corresponding
-    epic directory (created if necessary).  If the ticket already exists
-    elsewhere it is moved to the correct location.
+    All tickets are placed at the root level (flat layout).  If the ticket
+    already exists with a different name (summary changed), it is renamed.
     """
     existing = resolve_ticket_dir(root, key)
     dirname = ticket_dir_name(key, summary)
-
-    if epic_key:
-        epic_name = ticket_dir_name(epic_key, epic_summary or epic_key)
-        parent = root / epic_name
-        parent.mkdir(parents=True, exist_ok=True)
-    else:
-        parent = root
-
-    target = parent / dirname
+    target = root / dirname
 
     if existing and existing != target:
-        # Move to new location (e.g. root -> epic subdir).
-        target.parent.mkdir(parents=True, exist_ok=True)
         shutil.move(str(existing), str(target))
     elif not existing:
         target.mkdir(parents=True, exist_ok=True)
@@ -130,6 +125,51 @@ def ensure_ticket_dir(
     # Always ensure the orchestrator subdirectory exists.
     (target / "orchestrator").mkdir(exist_ok=True)
     return target
+
+
+def ensure_epic_link(
+    root: Path,
+    ticket_dir: Path,
+    epic_key: str,
+    epic_summary: str | None = None,
+) -> Path:
+    """Create the epic metadata file and symlink EPIC.md in the orchestrator dir.
+
+    - Creates ``{root}/epics/{EPIC_KEY}-{slug}.md`` if it doesn't exist.
+    - Creates or updates ``{ticket_dir}/orchestrator/EPIC.md`` as a relative
+      symlink to the epic file.
+
+    Returns the path to the epic metadata file.
+    """
+    epics_dir = root / "epics"
+    epics_dir.mkdir(exist_ok=True)
+
+    epic_filename = ticket_dir_name(epic_key, epic_summary or epic_key) + ".md"
+    epic_file = epics_dir / epic_filename
+
+    if not epic_file.exists():
+        content = generate_frontmatter(source="sync")
+        content += f"\n# {epic_key}: {epic_summary or epic_key}\n"
+        epic_file.write_text(content)
+
+    orch_dir = ticket_dir / "orchestrator"
+    orch_dir.mkdir(exist_ok=True)
+    link_path = orch_dir / "EPIC.md"
+    rel_target = os.path.relpath(epic_file, orch_dir)
+
+    if link_path.is_symlink():
+        current_target = os.readlink(link_path)
+        if current_target != rel_target:
+            link_path.unlink()
+            link_path.symlink_to(rel_target)
+    elif link_path.exists():
+        # A regular file — replace with symlink.
+        link_path.unlink()
+        link_path.symlink_to(rel_target)
+    else:
+        link_path.symlink_to(rel_target)
+
+    return epic_file
 
 
 def orchestrator_dir(ticket_dir: Path) -> Path:
@@ -144,10 +184,10 @@ def orchestrator_dir(ticket_dir: Path) -> Path:
 # ---------------------------------------------------------------------------
 
 def enumerate_ticket_dirs(root: Path) -> list[tuple[str, Path]]:
-    """Scan *root* for all leaf ticket directories.
+    """Scan *root* for all ticket directories (flat layout).
 
-    Returns a list of ``(ticket_key, path)`` pairs.  Ticket dirs nested under
-    epic dirs are included; the epic dirs themselves are not.
+    Returns a list of ``(ticket_key, path)`` pairs.  Only scans the root
+    level — tickets are never nested.
     """
     results: list[tuple[str, Path]] = []
     if not root.is_dir():
@@ -157,22 +197,34 @@ def enumerate_ticket_dirs(root: Path) -> list[tuple[str, Path]]:
         if child.name.startswith(".") or not child.is_dir():
             continue
         key = _key_from_dirname(child.name)
-        if not key:
-            continue
-
-        if _is_ticket_dir(child) and not _contains_ticket_dirs(child):
-            # Leaf ticket dir at root level.
+        if key and _is_ticket_dir(child):
             results.append((key, child))
-        else:
-            # Potential epic dir — look inside for ticket dirs.
-            for sub in sorted(child.iterdir()):
-                if not sub.is_dir():
-                    continue
-                sub_key = _key_from_dirname(sub.name)
-                if sub_key and _is_ticket_dir(sub):
-                    results.append((sub_key, sub))
 
     return results
+
+
+# ---------------------------------------------------------------------------
+# Priority helpers
+# ---------------------------------------------------------------------------
+
+def read_priority_keys(root: Path) -> list[str]:
+    """Read PRIORITY.md and return ticket keys in priority order.
+
+    Works with both flat format (``- KEY``) and rich format
+    (``- **KEY** — notes``, sections, commentary).  Any markdown list
+    item containing a ticket key is recognised.
+    """
+    priority_file = root / "PRIORITY.md"
+    if not priority_file.exists():
+        return []
+    keys: list[str] = []
+    for line in priority_file.read_text().splitlines():
+        stripped = line.strip()
+        if stripped.startswith("- "):
+            m = TICKET_KEY_PATTERN.search(stripped)
+            if m:
+                keys.append(m.group(0))
+    return keys
 
 
 # ---------------------------------------------------------------------------
@@ -183,6 +235,7 @@ def archive_ticket(root: Path, key: str) -> Path | None:
     """Move the ticket directory for *key* into ``root/.archive/``.
 
     Returns the archive path, or None if no matching ticket dir was found.
+    Priority cleanup is handled by the orchestrator.
     """
     src = resolve_ticket_dir(root, key)
     if src is None:
@@ -194,16 +247,11 @@ def archive_ticket(root: Path, key: str) -> Path | None:
     return dest
 
 
-def restore_ticket(
-    root: Path,
-    key: str,
-    epic_key: str | None = None,
-) -> Path | None:
+def restore_ticket(root: Path, key: str) -> Path | None:
     """Move a ticket directory from ``.archive`` back into the workspace.
 
-    If *epic_key* is given the ticket is placed under the corresponding epic
-    directory.  Returns the restored path, or None if nothing was found in the
-    archive.
+    Restores to the workspace root (flat layout).  Returns the restored path,
+    or None if nothing was found in the archive.
     """
     archive = root / ".archive"
     if not archive.is_dir():
@@ -218,18 +266,6 @@ def restore_ticket(
     if src is None:
         return None
 
-    if epic_key:
-        # Find an existing epic dir, or fall back to root.
-        epic_prefix = f"{epic_key}-"
-        parent = root
-        for child in sorted(root.iterdir()):
-            if child.is_dir() and child.name.startswith(epic_prefix):
-                parent = child
-                break
-    else:
-        parent = root
-
-    parent.mkdir(parents=True, exist_ok=True)
-    dest = parent / src.name
+    dest = root / src.name
     shutil.move(str(src), str(dest))
     return dest

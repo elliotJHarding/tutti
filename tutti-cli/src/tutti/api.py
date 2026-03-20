@@ -13,6 +13,7 @@ from tutti.exceptions import AuthError, ConfigError, SyncError, TuttiError, Work
 from tutti.models import Comment, PRComment, PullRequest, Reviewer, SyncResult, Ticket
 from tutti.workspace import (
     archive_ticket,
+    ensure_epic_link,
     ensure_ticket_dir,
     enumerate_ticket_dirs,
     orchestrator_dir,
@@ -36,6 +37,7 @@ __all__ = [
     "WorkspaceConfig",
     "WorkspaceError",
     "archive_ticket",
+    "ensure_epic_link",
     "ensure_ticket_dir",
     "enumerate_ticket_dirs",
     "find_workspace_root",

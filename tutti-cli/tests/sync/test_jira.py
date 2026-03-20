@@ -8,6 +8,7 @@ from pathlib import Path
 import httpx
 import pytest
 
+from tutti.config import SandboxConfig
 from tutti.exceptions import AuthError
 from tutti.models import Comment, Ticket
 from tutti.sync.jira import JiraSync, _status_category
@@ -36,6 +37,17 @@ def jira() -> JiraSync:
         email="user@example.com",
         token="fake-token",
         jql="assignee = currentUser()",
+    )
+
+
+@pytest.fixture
+def jira_with_sandbox() -> JiraSync:
+    return JiraSync(
+        domain="jira.example.com",
+        email="user@example.com",
+        token="fake-token",
+        jql="assignee = currentUser()",
+        sandbox=SandboxConfig(),
     )
 
 
@@ -485,29 +497,41 @@ class TestFullSync:
         assert result.errors == []
         assert result.duration_seconds > 0
 
-        # Verify ticket directories were created.
-        # PROJ-101 should be under the PROJ-50 epic dir.
-        epic_dirs = [
-            d for d in tmp_workspace.iterdir()
-            if d.is_dir() and d.name.startswith("PROJ-50")
-        ]
-        assert len(epic_dirs) == 1
-
-        # PROJ-101 should be inside the epic dir.
+        # Verify ticket directories were created at root level (flat layout).
         ticket_101_dirs = [
-            d for d in epic_dirs[0].iterdir()
+            d for d in tmp_workspace.iterdir()
             if d.is_dir() and d.name.startswith("PROJ-101")
         ]
         assert len(ticket_101_dirs) == 1
         assert (ticket_101_dirs[0] / "orchestrator" / "TICKET.md").exists()
 
-        # PROJ-102 has epic_key PROJ-50 (via customfield_10014), also under epic dir.
         ticket_102_dirs = [
-            d for d in epic_dirs[0].iterdir()
+            d for d in tmp_workspace.iterdir()
             if d.is_dir() and d.name.startswith("PROJ-102")
         ]
         assert len(ticket_102_dirs) == 1
         assert (ticket_102_dirs[0] / "orchestrator" / "TICKET.md").exists()
+
+        # Verify EPIC.md symlinks exist inside orchestrator/ and point to epics/ folder.
+        import os
+        epic_link_101 = ticket_101_dirs[0] / "orchestrator" / "EPIC.md"
+        assert epic_link_101.is_symlink()
+        assert not os.path.isabs(os.readlink(epic_link_101))
+        assert epic_link_101.resolve().parent.name == "epics"
+
+        epic_link_102 = ticket_102_dirs[0] / "orchestrator" / "EPIC.md"
+        assert epic_link_102.is_symlink()
+
+        # Verify epics/ folder contains the epic metadata file.
+        epics_dir = tmp_workspace / "epics"
+        assert epics_dir.is_dir()
+        epic_files = list(epics_dir.iterdir())
+        assert len(epic_files) == 1
+        assert "PROJ-50" in epic_files[0].name
+        assert epic_files[0].name.endswith(".md")
+
+        # Both symlinks should point to the same epic file.
+        assert epic_link_101.resolve() == epic_link_102.resolve()
 
         # Verify TICKET.md content for PROJ-101.
         content_101 = (ticket_101_dirs[0] / "orchestrator" / "TICKET.md").read_text()
@@ -545,3 +569,24 @@ class TestFullSync:
         assert result.tickets_synced == 0
         assert len(result.errors) == 1
         assert "401" in result.errors[0]
+
+    def test_sync_writes_sandbox_settings(
+        self, jira_with_sandbox: JiraSync, httpx_mock,
+        search_response: dict, transitions_response: dict,
+        tmp_workspace: Path,
+    ):
+        httpx_mock.add_response(json=search_response)
+        httpx_mock.add_response(json=transitions_response)
+        httpx_mock.add_response(json={"transitions": []})
+
+        result = jira_with_sandbox.sync(tmp_workspace)
+
+        assert result.tickets_synced == 2
+        # Each ticket dir should have .claude/settings.json
+        for d in tmp_workspace.iterdir():
+            if d.is_dir() and not d.name.startswith(".") and d.name != "epics":
+                settings = d / ".claude" / "settings.json"
+                assert settings.exists(), f"Missing settings.json in {d.name}"
+                import json
+                data = json.loads(settings.read_text())
+                assert data["sandbox"]["enabled"] is True

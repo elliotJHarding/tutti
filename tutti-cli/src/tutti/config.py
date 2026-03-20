@@ -41,6 +41,34 @@ class SyncIntervals:
 
 
 @dataclass(frozen=True)
+class SandboxConfig:
+    """Sandbox restrictions for Claude Code sessions."""
+
+    enabled: bool = True
+    auto_allow_bash: bool = True
+    skip_permissions: bool = False
+    allow_write: tuple[str, ...] = (
+        ".",
+        "~/.m2",
+        "~/.gradle",
+        "~/.cache/pip",
+        "~/.local",
+        "~/.npm",
+        "~/.cargo",
+        "~/.swiftly",
+        "~/.docker",
+        "~/.bin",
+        "~/mssql",
+        "/tmp",
+        "/private/tmp",
+        "~/.config/gh",
+        "~/.config/git",
+    )
+    deny_read: tuple[str, ...] = ("~/.ssh", "~/.aws", "~/.gnupg")
+    allowed_domains: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class WorkspaceConfig:
     """Immutable workspace configuration."""
 
@@ -52,6 +80,7 @@ class WorkspaceConfig:
     )
     trust: TrustConfig = field(default_factory=TrustConfig)
     sync_intervals: SyncIntervals = field(default_factory=SyncIntervals)
+    sandbox: SandboxConfig = field(default_factory=SandboxConfig)
 
 
 # ---------------------------------------------------------------------------
@@ -84,6 +113,43 @@ def _trust_to_dict(trust: TrustConfig) -> dict[str, str]:
     for f in fields(trust):
         yaml_key = _TRUST_PY_TO_YAML[f.name]
         result[yaml_key] = getattr(trust, f.name)
+    return result
+
+
+_SANDBOX_YAML_TO_PY = {
+    "autoAllowBashIfSandboxed": "auto_allow_bash",
+    "skipPermissions": "skip_permissions",
+    "allowWrite": "allow_write",
+    "denyRead": "deny_read",
+    "allowedDomains": "allowed_domains",
+}
+_SANDBOX_PY_TO_YAML = {v: k for k, v in _SANDBOX_YAML_TO_PY.items()}
+
+
+def _parse_sandbox(raw: dict[str, Any]) -> SandboxConfig:
+    kwargs: dict[str, Any] = {}
+    if "enabled" in raw:
+        kwargs["enabled"] = raw["enabled"]
+    for yaml_key, py_key in _SANDBOX_YAML_TO_PY.items():
+        if yaml_key in raw:
+            val = raw[yaml_key]
+            # Convert lists to tuples for frozen dataclass fields.
+            if isinstance(val, list):
+                val = tuple(val)
+            kwargs[py_key] = val
+    return SandboxConfig(**kwargs)
+
+
+def _sandbox_to_dict(sandbox: SandboxConfig) -> dict[str, Any]:
+    result: dict[str, Any] = {"enabled": sandbox.enabled}
+    for f in fields(sandbox):
+        if f.name == "enabled":
+            continue
+        yaml_key = _SANDBOX_PY_TO_YAML[f.name]
+        val = getattr(sandbox, f.name)
+        if isinstance(val, tuple):
+            val = list(val)
+        result[yaml_key] = val
     return result
 
 
@@ -129,6 +195,7 @@ def load_config(root: Path) -> WorkspaceConfig:
 
     trust = _parse_trust(raw.get("trust", {}))
     sync_intervals = _parse_sync_intervals(raw.get("syncIntervals", {}))
+    sandbox = _parse_sandbox(raw.get("sandbox", {}))
 
     return WorkspaceConfig(
         root=ws_root,
@@ -137,6 +204,7 @@ def load_config(root: Path) -> WorkspaceConfig:
         repo_paths=repo_paths,
         trust=trust,
         sync_intervals=sync_intervals,
+        sandbox=sandbox,
     )
 
 
@@ -156,6 +224,7 @@ def save_config(config: WorkspaceConfig, root: Path) -> None:
         "repoPaths": [str(p) for p in config.repo_paths],
         "trust": _trust_to_dict(config.trust),
         "syncIntervals": _sync_intervals_to_dict(config.sync_intervals),
+        "sandbox": _sandbox_to_dict(config.sandbox),
     }
     config_path = root / _CONFIG_FILENAME
     config_path.write_text(yaml.dump(data, default_flow_style=False, sort_keys=False))

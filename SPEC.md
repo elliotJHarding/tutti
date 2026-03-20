@@ -80,27 +80,30 @@ The tutti workspace is a configurable root directory that contains all active wo
     .claude/
         CLAUDE.md                    # persistent context for orchestrator sessions
 
-    {EPIC_KEY}-{epic-title}/
-        {TICKET_KEY}-{ticket-title}/
-            orchestrator/
-                TICKET.md            # sync snapshot: Jira ticket data
-                PULL_REQUESTS.md     # sync snapshot: GitHub PR data
-                CI.md                # sync snapshot: build/deploy status
-                CLAUDE_SESSIONS.md   # sync snapshot: active Claude sessions
-                WORKSPACE.md         # sync snapshot: local workspace state
-                PROPOSED_ACTIONS.md  # orchestrator: actions awaiting approval
-                BACKGROUND.md        # authored: business context research
-                AC.md                # authored: detailed acceptance criteria
-                SPEC.md              # authored: technical specification
-                IMPLEMENTATION.md    # authored: explanation of changes
-                VERIFICATION.md      # authored: test results and evidence
-                DEPLOYMENT.md        # authored: deployment concerns
-                QA.md                # authored: QA testing plan
-                ORCHESTRATOR.md      # authored: orchestrator's working notes
-            repo-1/                  # git worktree
-            repo-2/                  # git worktree
+    epics/
+        {EPIC_KEY}-{epic-title}.md   # epic metadata (source: sync)
 
-    {TICKET_KEY}-{ticket-title}/     # tickets without an epic
+    {TICKET_KEY}-{ticket-title}/     # all tickets live at root level
+        orchestrator/
+            EPIC.md -> ../../epics/{EPIC_KEY}-{epic-title}.md   # symlink to parent epic
+            TICKET.md                # sync snapshot: Jira ticket data
+            PULL_REQUESTS.md         # sync snapshot: GitHub PR data
+            CI.md                    # sync snapshot: build/deploy status
+            CLAUDE_SESSIONS.md       # sync snapshot: active Claude sessions
+            WORKSPACE.md             # sync snapshot: local workspace state
+            PROPOSED_ACTIONS.md      # orchestrator: actions awaiting approval
+            BACKGROUND.md            # authored: business context research
+            AC.md                    # authored: detailed acceptance criteria
+            SPEC.md                  # authored: technical specification
+            IMPLEMENTATION.md        # authored: explanation of changes
+            VERIFICATION.md         # authored: test results and evidence
+            DEPLOYMENT.md            # authored: deployment concerns
+            QA.md                    # authored: QA testing plan
+            ORCHESTRATOR.md          # authored: orchestrator's working notes
+        repo-1/                      # git worktree
+        repo-2/                      # git worktree
+
+    {TICKET_KEY}-{ticket-title}/     # tickets without an epic (no EPIC.md)
         orchestrator/
             ...
         repo-1/
@@ -116,7 +119,7 @@ The workspace root is configurable. It defaults to `~/workspace/tutti/` but can 
 
 ### Ticket directories
 
-Each ticket gets a directory named `{TICKET_KEY}-{ticket-title}` (e.g. `ERSC-1278-fix-auth-middleware`). The title is slugified from the Jira summary for human readability. If the ticket belongs to an epic, it is nested under the epic's directory.
+Each ticket gets a directory named `{TICKET_KEY}-{ticket-title}` (e.g. `ERSC-1278-fix-auth-middleware`) directly under the workspace root. The title is slugified from the Jira summary for human readability. If the ticket belongs to an epic, its `orchestrator/` directory gets an `EPIC.md` symlink pointing to the epic's metadata file in the `epics/` directory.
 
 ### The orchestrator/ subdirectory
 
