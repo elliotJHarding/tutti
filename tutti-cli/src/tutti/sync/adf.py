@@ -163,13 +163,13 @@ def _convert_list_items(content: list, *, ordered: bool) -> str:
         text = "".join(parts).strip()
         prefix = f"{i + 1}. " if ordered else "- "
         result.append(f"{prefix}{text}\n")
+        indent = " " * len(prefix)
 
         for nested in nested_lists:
             nested_md = _convert_node(nested)
-            # Indent nested list items
             for line in nested_md.split("\n"):
                 if line:
-                    result.append(f"  {line}\n")
+                    result.append(f"{indent}{line}\n")
 
     return "".join(result)
 

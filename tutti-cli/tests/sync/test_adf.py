@@ -413,8 +413,88 @@ class TestLists:
             ],
         }
         result = adf_to_markdown(adf)
-        assert "- parent" in result
-        assert "  - child" in result
+        assert result == "- parent\n  - child"
+
+    def test_nested_ordered_list(self):
+        adf = {
+            "type": "doc",
+            "content": [
+                {
+                    "type": "orderedList",
+                    "content": [
+                        {
+                            "type": "listItem",
+                            "content": [
+                                {
+                                    "type": "paragraph",
+                                    "content": [{"type": "text", "text": "parent"}],
+                                },
+                                {
+                                    "type": "bulletList",
+                                    "content": [
+                                        {
+                                            "type": "listItem",
+                                            "content": [
+                                                {
+                                                    "type": "paragraph",
+                                                    "content": [
+                                                        {"type": "text", "text": "child"}
+                                                    ],
+                                                }
+                                            ],
+                                        }
+                                    ],
+                                },
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+        result = adf_to_markdown(adf)
+        assert result == "1. parent\n   - child"
+
+    def test_nested_ordered_list_double_digit(self):
+        items = []
+        for n in range(10):
+            item = {
+                "type": "listItem",
+                "content": [
+                    {
+                        "type": "paragraph",
+                        "content": [{"type": "text", "text": f"item {n + 1}"}],
+                    }
+                ],
+            }
+            if n == 9:
+                item["content"].append(
+                    {
+                        "type": "bulletList",
+                        "content": [
+                            {
+                                "type": "listItem",
+                                "content": [
+                                    {
+                                        "type": "paragraph",
+                                        "content": [
+                                            {"type": "text", "text": "sub"}
+                                        ],
+                                    }
+                                ],
+                            }
+                        ],
+                    }
+                )
+            items.append(item)
+
+        adf = {
+            "type": "doc",
+            "content": [{"type": "orderedList", "content": items}],
+        }
+        result = adf_to_markdown(adf)
+        lines = result.strip().split("\n")
+        assert lines[-2] == "10. item 10"
+        assert lines[-1] == "    - sub"
 
 
 class TestMedia:
