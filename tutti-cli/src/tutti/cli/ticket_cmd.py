@@ -9,9 +9,9 @@ import click
 
 from tutti.cli.output import Col, error, kv, output, section, table
 from tutti.cli.resolve import complete_ticket_key, resolve_root
-from tutti.config import ConfigError
+from tutti.config import ConfigError, load_config
 from tutti.markdown import extract_table, parse_frontmatter
-from tutti.workspace import enumerate_ticket_dirs, resolve_ticket_dir
+from tutti.workspace import enumerate_ticket_dirs, read_priority_keys, resolve_ticket_dir
 
 
 def _parse_ticket_md(content: str) -> dict[str, str]:
@@ -41,22 +41,6 @@ def _parse_ticket_md(content: str) -> dict[str, str]:
             info[field_name.lower()] = value
 
     return info
-
-
-def _read_priority_keys(root: Path) -> list[str]:
-    """Read PRIORITY.md and return ticket keys in priority order."""
-    priority_file = root / "PRIORITY.md"
-    if not priority_file.exists():
-        return []
-    keys: list[str] = []
-    from tutti.markdown import TICKET_KEY_PATTERN
-    for line in priority_file.read_text().splitlines():
-        line = line.strip()
-        if line.startswith("- "):
-            m = TICKET_KEY_PATTERN.search(line)
-            if m:
-                keys.append(m.group(0))
-    return keys
 
 
 @click.group()
@@ -128,7 +112,7 @@ def ticket_list(
 
     # Sort
     if sort_by == "priority":
-        priority_keys = _read_priority_keys(root)
+        priority_keys = read_priority_keys(root)
         priority_map = {k: i for i, k in enumerate(priority_keys)}
         entries.sort(key=lambda e: priority_map.get(e["key"], len(priority_keys)))
     elif sort_by == "key":
@@ -150,6 +134,39 @@ def ticket_list(
     ]
     rows = [[e["key"], e["summary"], e["status"], e["category"]] for e in entries]
     table("Tracked Tickets", columns, rows, data=entries)
+
+
+@ticket.command("open")
+@click.argument("key", shell_complete=complete_ticket_key)
+@click.pass_context
+def ticket_open(ctx: click.Context, key: str) -> None:
+    """Open a ticket's Jira page in the browser."""
+    try:
+        root = resolve_root(ctx)
+    except ConfigError as exc:
+        error(str(exc))
+        ctx.exit(1)
+        return
+
+    config = load_config(root)
+    if not config.jira_domain:
+        error("jira.domain is not configured. Set it in config.yaml.")
+        ctx.exit(1)
+        return
+
+    ticket_dir = resolve_ticket_dir(root, key)
+    if ticket_dir is None:
+        error(f"Ticket {key} not found.")
+        ctx.exit(1)
+        return
+
+    url = f"https://{config.jira_domain}/browse/{key}"
+
+    if ctx.obj and ctx.obj.get("json"):
+        output("", data={"key": key, "url": url})
+    else:
+        click.launch(url)
+        output(f"Opened {url}")
 
 
 @ticket.command("show")

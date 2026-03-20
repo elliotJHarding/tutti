@@ -8,11 +8,11 @@ from pathlib import Path
 
 import click
 
-from tutti.cli.output import Col, error, output, table
+from tutti.cli.output import Col, error, output, section, table
 from tutti.cli.resolve import resolve_root
 from tutti.config import ConfigError
-from tutti.markdown import TICKET_KEY_PATTERN, extract_table, parse_frontmatter
-from tutti.workspace import enumerate_ticket_dirs
+from tutti.markdown import extract_table, parse_frontmatter
+from tutti.workspace import enumerate_ticket_dirs, read_priority_keys
 
 
 def _parse_ticket_md(content: str) -> dict[str, str]:
@@ -139,19 +139,19 @@ def _sync_age(ticket_dir: Path) -> str:
         return "?"
 
 
-def _read_priority_keys(root: Path) -> list[str]:
-    """Read PRIORITY.md and return ticket keys in priority order."""
-    priority_file = root / "PRIORITY.md"
-    if not priority_file.exists():
+def _read_proposed_actions(ticket_dir: Path) -> list[str]:
+    """Extract proposal summaries from PROPOSED_ACTIONS.md.
+
+    Returns the text of each ``## `` heading as a one-line summary.
+    """
+    pa_md = ticket_dir / "orchestrator" / "PROPOSED_ACTIONS.md"
+    if not pa_md.exists():
         return []
-    keys: list[str] = []
-    for line in priority_file.read_text().splitlines():
-        line = line.strip()
-        if line.startswith("- "):
-            m = TICKET_KEY_PATTERN.search(line)
-            if m:
-                keys.append(m.group(0))
-    return keys
+    proposals: list[str] = []
+    for line in pa_md.read_text(encoding="utf-8").splitlines():
+        if line.startswith("## "):
+            proposals.append(line[3:].strip())
+    return proposals
 
 
 _TERMINAL_STATUSES = {"closed", "done"}
@@ -180,7 +180,7 @@ def status(ctx: click.Context, show_all: bool, show_closed: bool) -> None:
         return
 
     # Build priority ordering
-    priority_keys = _read_priority_keys(root)
+    priority_keys = read_priority_keys(root)
     priority_map = {k: i for i, k in enumerate(priority_keys)}
 
     entries: list[dict] = []
@@ -197,6 +197,7 @@ def status(ctx: click.Context, show_all: bool, show_closed: bool) -> None:
         sessions = _count_active_sessions(path)
         dirty = _check_dirty_repos(path)
         age = _sync_age(path)
+        proposals = _read_proposed_actions(path)
 
         pri_pos = priority_map.get(key)
         pri_str = f"#{pri_pos + 1}" if pri_pos is not None else ""
@@ -213,6 +214,7 @@ def status(ctx: click.Context, show_all: bool, show_closed: bool) -> None:
             "sessions": sessions,
             "dirty_repos": dirty,
             "sync_age": age,
+            "proposed_actions": proposals,
             "path": str(path),
         })
 
@@ -296,3 +298,16 @@ def status(ctx: click.Context, show_all: bool, show_closed: bool) -> None:
         ])
 
     table("tutti Status", columns, rows, data=entries)
+
+    # Show proposed actions below the table
+    proposals_by_key = [
+        (e["key"], e["proposed_actions"])
+        for e in entries
+        if e["proposed_actions"]
+    ]
+    if proposals_by_key:
+        output("")
+        section("Proposed Actions")
+        for key, proposals in proposals_by_key:
+            for proposal in proposals:
+                output(f"  {key}: {proposal}")

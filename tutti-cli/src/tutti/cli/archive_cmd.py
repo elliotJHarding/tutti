@@ -91,9 +91,8 @@ def archive_add(ctx: click.Context, key: str) -> None:
 
 @archive.command("restore")
 @click.argument("key", shell_complete=complete_ticket_key)
-@click.option("--epic", default=None, help="Epic key to restore under.")
 @click.pass_context
-def archive_restore(ctx: click.Context, key: str, epic: str | None) -> None:
+def archive_restore(ctx: click.Context, key: str) -> None:
     """Restore an archived ticket to the workspace."""
     try:
         root = resolve_root(ctx)
@@ -102,7 +101,7 @@ def archive_restore(ctx: click.Context, key: str, epic: str | None) -> None:
         ctx.exit(1)
         return
 
-    result = restore_ticket(root, key, epic_key=epic)
+    result = restore_ticket(root, key)
     if result is None:
         error(f"Ticket {key} not found in archive.")
         ctx.exit(1)

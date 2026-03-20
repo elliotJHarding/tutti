@@ -34,3 +34,23 @@ def complete_ticket_key(
         for k in keys
         if k.lower().startswith(incomplete.lower())
     ]
+
+
+def complete_repo_name(
+    ctx: click.Context, param: click.Parameter, incomplete: str
+) -> list[CompletionItem]:
+    """Shell completion callback that suggests discovered repository names."""
+    try:
+        root = resolve_root(ctx)
+    except Exception:
+        return []
+    from tutti.config import load_config
+    from tutti.cli.workspace_cmd import discover_repos
+
+    cfg = load_config(root)
+    names = [name for name, _ in discover_repos(cfg)]
+    return [
+        CompletionItem(n)
+        for n in names
+        if n.lower().startswith(incomplete.lower())
+    ]

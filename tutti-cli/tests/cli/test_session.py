@@ -16,7 +16,9 @@ from tutti.cli.session_cmd import (
     _discover_sessions,
     _extract_transcript_info,
     _focus_terminal_tab,
+    _get_terminal_title,
     _get_tty,
+    _has_active_children,
     _infer_session_status,
     _match_session_ticket,
 )
@@ -63,6 +65,71 @@ def test_extract_transcript_info_empty_file(tmp_path: Path):
     info = _extract_transcript_info(transcript)
 
     assert info == {}
+
+
+def test_discover_sessions_uses_terminal_title(tmp_path: Path):
+    """Alive sessions should use terminal tab title as topic when available."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    data = {"sessionId": "term-title-sess", "cwd": "/workspace", "startTime": "2025-01-01T00:00:00Z"}
+    (sessions_dir / "77777.json").write_text(json.dumps(data))
+
+    project_dir = tmp_path / "projects" / "Users-workspace"
+    project_dir.mkdir(parents=True)
+    transcript = project_dir / "term-title-sess.jsonl"
+    transcript.write_text(json.dumps({
+        "timestamp": "2025-01-01T00:00:00Z",
+        "type": "user",
+        "message": {"content": "Fix the bug"},
+    }))
+
+    with (
+        patch("tutti.cli.session_cmd._is_pid_alive", return_value=True),
+        patch("tutti.cli.session_cmd._get_tty", return_value="ttys042"),
+        patch("tutti.cli.session_cmd._get_terminal_title", return_value="fix-auth-bug"),
+    ):
+        sessions = _discover_sessions(claude_dir=tmp_path, lookback_hours=9999)
+
+    matched = [s for s in sessions if s["session_id"] == "term-title-sess"]
+    assert len(matched) == 1
+    assert matched[0]["topic"] == "fix-auth-bug"
+
+
+def test_discover_sessions_falls_back_to_transcript_topic(tmp_path: Path):
+    """When terminal title is unavailable, topic should come from first user message."""
+    sessions_dir = tmp_path / "sessions"
+    sessions_dir.mkdir()
+    data = {"sessionId": "fallback-sess", "cwd": "/workspace", "startTime": "2025-01-01T00:00:00Z"}
+    (sessions_dir / "88888.json").write_text(json.dumps(data))
+
+    project_dir = tmp_path / "projects" / "Users-workspace"
+    project_dir.mkdir(parents=True)
+    transcript = project_dir / "fallback-sess.jsonl"
+    transcript.write_text(json.dumps({
+        "timestamp": "2025-01-01T00:00:00Z",
+        "type": "user",
+        "message": {"content": "Fix the bug"},
+    }))
+
+    with (
+        patch("tutti.cli.session_cmd._is_pid_alive", return_value=True),
+        patch("tutti.cli.session_cmd._get_tty", return_value="ttys042"),
+        patch("tutti.cli.session_cmd._get_terminal_title", return_value=None),
+    ):
+        sessions = _discover_sessions(claude_dir=tmp_path, lookback_hours=9999)
+
+    matched = [s for s in sessions if s["session_id"] == "fallback-sess"]
+    assert len(matched) == 1
+    assert matched[0]["topic"] == "Fix the bug"
+
+
+def test_get_terminal_title_returns_none_on_error():
+    """Error during subprocess calls should return None, not raise."""
+    with (
+        patch("shutil.which", return_value=None),
+        patch("platform.system", return_value="Linux"),
+    ):
+        assert _get_terminal_title("ttys042") is None
 
 
 def test_extract_transcript_info_content_blocks(tmp_path: Path):
@@ -414,7 +481,7 @@ def test_infer_status_tool_use_exit_plan(tmp_path: Path):
         {"type": "tool_use", "name": "ExitPlanMode", "id": "x", "input": {}},
     ]
     t.write_text(_assistant_entry("tool_use", content))
-    assert _infer_session_status(t) == "plan_ready"
+    assert _infer_session_status(t) == "ready"
 
 
 def test_infer_status_tool_use_enter_plan(tmp_path: Path):
@@ -434,6 +501,21 @@ def test_infer_status_tool_use_other(tmp_path: Path):
     ]
     t.write_text(_assistant_entry("tool_use", content))
     assert _infer_session_status(t) == "working"
+
+
+def test_infer_status_ask_user_user_responded(tmp_path: Path):
+    """AskUserQuestion followed by a user message should return 'ready'."""
+    t = tmp_path / "s.jsonl"
+    content = [
+        {"type": "text", "text": "Which option?"},
+        {"type": "tool_use", "name": "AskUserQuestion", "id": "x", "input": {}},
+    ]
+    lines = [
+        _assistant_entry("tool_use", content),
+        json.dumps({"type": "user", "message": {"content": "Option A"}}),
+    ]
+    t.write_text("\n".join(lines))
+    assert _infer_session_status(t) == "ready"
 
 
 def test_infer_status_null_stop_reason(tmp_path: Path):
@@ -471,6 +553,106 @@ def test_session_start_missing_ticket(tmp_path: Path):
 
     assert result.exit_code != 0
     assert "not found" in result.output.lower() or "sync" in result.output.lower()
+
+
+def test_session_start_passthrough_args(tmp_path: Path):
+    _init_workspace(tmp_path)
+    ticket_dir = tmp_path / "PROJ-1-feature"
+    (ticket_dir / "orchestrator").mkdir(parents=True)
+
+    runner = CliRunner()
+
+    with (
+        patch("shutil.which", return_value="/usr/bin/claude"),
+        patch("tutti.cli.session_cmd.subprocess.run") as mock_run,
+    ):
+        result = runner.invoke(
+            cli,
+            [
+                "--workspace-root", str(tmp_path),
+                "session", "start", "PROJ-1",
+                "-p", "do stuff",
+                "--", "--dangerously-skip-permissions", "--add-dir", "/tmp/foo",
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    cmd = mock_run.call_args[0][0]
+    assert "--dangerously-skip-permissions" in cmd
+    assert "--add-dir" in cmd
+    assert "/tmp/foo" in cmd
+    # The known options should still be handled
+    assert "-p" in cmd
+
+
+def test_session_start_no_extra_args(tmp_path: Path):
+    _init_workspace(tmp_path)
+    ticket_dir = tmp_path / "PROJ-1-feature"
+    (ticket_dir / "orchestrator").mkdir(parents=True)
+
+    runner = CliRunner()
+
+    with (
+        patch("shutil.which", return_value="/usr/bin/claude"),
+        patch("tutti.cli.session_cmd.subprocess.run") as mock_run,
+    ):
+        result = runner.invoke(
+            cli,
+            ["--workspace-root", str(tmp_path), "session", "start", "PROJ-1"],
+        )
+
+    assert result.exit_code == 0, result.output
+    cmd = mock_run.call_args[0][0]
+    assert cmd[0] == "/usr/bin/claude"
+    assert "--dangerously-skip-permissions" not in cmd
+
+
+def test_session_start_skip_permissions(tmp_path: Path):
+    _init_workspace(tmp_path)
+    ticket_dir = tmp_path / "PROJ-1-feature"
+    (ticket_dir / "orchestrator").mkdir(parents=True)
+
+    runner = CliRunner()
+
+    with (
+        patch("shutil.which", return_value="/usr/bin/claude"),
+        patch("tutti.cli.session_cmd.subprocess.run") as mock_run,
+    ):
+        result = runner.invoke(
+            cli,
+            [
+                "--workspace-root", str(tmp_path),
+                "session", "start", "--skip-permissions", "PROJ-1",
+            ],
+        )
+
+    assert result.exit_code == 0, result.output
+    cmd = mock_run.call_args[0][0]
+    assert "--dangerously-skip-permissions" in cmd
+
+
+def test_session_start_skip_permissions_requires_sandbox(tmp_path: Path):
+    _init_workspace(tmp_path)
+    # Write config with sandbox disabled
+    (tmp_path / "config.yaml").write_text(
+        "workspace:\n  root: .\nsandbox:\n  enabled: false\n"
+    )
+    ticket_dir = tmp_path / "PROJ-1-feature"
+    (ticket_dir / "orchestrator").mkdir(parents=True)
+
+    runner = CliRunner()
+
+    with patch("shutil.which", return_value="/usr/bin/claude"):
+        result = runner.invoke(
+            cli,
+            [
+                "--workspace-root", str(tmp_path),
+                "session", "start", "--skip-permissions", "PROJ-1",
+            ],
+        )
+
+    assert result.exit_code != 0
+    assert "sandbox" in result.output.lower()
 
 
 def test_session_start_missing_claude_binary(tmp_path: Path):
@@ -580,3 +762,14 @@ def test_session_jump_not_found(tmp_path: Path):
 
     assert result.exit_code != 0
     assert "No session found" in result.output
+
+
+# ---------------------------------------------------------------------------
+# _has_active_children — child process detection
+# ---------------------------------------------------------------------------
+
+
+def test_has_active_children_returns_false_on_error():
+    """Error during subprocess call should return False, not raise."""
+    with patch("tutti.cli.session_cmd.subprocess.run", side_effect=OSError("nope")):
+        assert _has_active_children(99999) is False

@@ -32,6 +32,7 @@ def _build_all_sources(cfg) -> tuple[list, list[tuple[str, str]]]:
             email=jira_email(),
             token=jira_token(),
             jql=cfg.jira_jql,
+            sandbox=cfg.sandbox,
         ))
     except AuthError as exc:
         skipped.append(("jira", str(exc)))
@@ -173,6 +174,7 @@ def sync_jira(ctx: click.Context) -> None:
             email=jira_email(),
             token=jira_token(),
             jql=cfg.jira_jql,
+            sandbox=cfg.sandbox,
         )
 
     _run_single_source(ctx, factory)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from unittest.mock import patch
 
 from click.testing import CliRunner
 
@@ -35,9 +36,12 @@ def _make_ticket(root: Path, key: str, slug: str, ticket_md: str | None = None) 
     return d
 
 
-def _init_workspace(root: Path) -> None:
+def _init_workspace(root: Path, jira_domain: str | None = "mycompany.atlassian.net") -> None:
     """Write a minimal config.yaml so find_workspace_root succeeds."""
-    (root / "config.yaml").write_text("workspace:\n  root: .\n")
+    lines = "workspace:\n  root: .\n"
+    if jira_domain:
+        lines += f"jira:\n  domain: {jira_domain}\n"
+    (root / "config.yaml").write_text(lines)
 
 
 class TestTicketList:
@@ -156,3 +160,60 @@ class TestTicketShow:
         assert "Repo worktrees" in result.output
         assert "frontend" in result.output
         assert "backend" in result.output
+
+
+class TestTicketOpen:
+    def test_open_existing(self, tmp_path: Path) -> None:
+        _init_workspace(tmp_path)
+        _make_ticket(tmp_path, "ERSC-100", "fix-auth", TICKET_MD)
+
+        runner = CliRunner()
+        with patch("click.launch") as mock_launch:
+            result = runner.invoke(
+                cli, ["--workspace-root", str(tmp_path), "ticket", "open", "ERSC-100"]
+            )
+
+        assert result.exit_code == 0, result.output
+        mock_launch.assert_called_once_with(
+            "https://mycompany.atlassian.net/browse/ERSC-100"
+        )
+
+    def test_open_missing_ticket(self, tmp_path: Path) -> None:
+        _init_workspace(tmp_path)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli, ["--workspace-root", str(tmp_path), "ticket", "open", "ERSC-999"]
+        )
+
+        assert result.exit_code != 0
+        assert "not found" in result.output.lower()
+
+    def test_open_missing_domain(self, tmp_path: Path) -> None:
+        _init_workspace(tmp_path, jira_domain=None)
+        _make_ticket(tmp_path, "ERSC-100", "fix-auth", TICKET_MD)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli, ["--workspace-root", str(tmp_path), "ticket", "open", "ERSC-100"]
+        )
+
+        assert result.exit_code != 0
+        assert "jira.domain" in result.output.lower()
+
+    def test_open_json(self, tmp_path: Path) -> None:
+        _init_workspace(tmp_path)
+        _make_ticket(tmp_path, "ERSC-100", "fix-auth", TICKET_MD)
+
+        runner = CliRunner()
+        with patch("click.launch") as mock_launch:
+            result = runner.invoke(
+                cli,
+                ["--json", "--workspace-root", str(tmp_path), "ticket", "open", "ERSC-100"],
+            )
+
+        assert result.exit_code == 0, result.output
+        mock_launch.assert_not_called()
+        data = json.loads(result.output.strip())
+        assert data["key"] == "ERSC-100"
+        assert data["url"] == "https://mycompany.atlassian.net/browse/ERSC-100"

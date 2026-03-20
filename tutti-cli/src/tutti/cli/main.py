@@ -5,6 +5,7 @@ import importlib
 import click
 
 COMMANDS = {
+    "add-repo": "tutti.cli.workspace_cmd:add_repo",
     "archive": "tutti.cli.archive_cmd:archive",
     "config": "tutti.cli.config_cmd:config",
     "doctor": "tutti.cli.doctor_cmd:doctor",

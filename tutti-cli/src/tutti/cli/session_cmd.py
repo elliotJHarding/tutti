@@ -16,7 +16,7 @@ from click.shell_completion import CompletionItem
 
 from tutti.cli.output import Col, error, kv, output, section, success, table
 from tutti.cli.resolve import complete_ticket_key, resolve_root
-from tutti.config import ConfigError
+from tutti.config import ConfigError, load_config
 from tutti.markdown import TICKET_KEY_PATTERN
 from tutti.workspace import enumerate_ticket_dirs, resolve_ticket_dir
 
@@ -67,6 +67,9 @@ def _discover_sessions(claude_dir: Path | None = None, lookback_hours: int = 48)
                             s["last_activity"] = info.get("last_activity", "")
                             if s["alive"]:
                                 s["status"] = _infer_session_status(transcript)
+                                if s["status"] in ("waiting",) and s.get("pid"):
+                                    if _has_active_children(s["pid"]):
+                                        s["status"] = "working"
                             break
                     continue
                 cwd = _decode_project_path(project_dir.name)
@@ -83,7 +86,28 @@ def _discover_sessions(claude_dir: Path | None = None, lookback_hours: int = 48)
                     "recent_messages": info.get("recent_messages", []),
                 })
 
+    # Override topic from terminal tab title for alive sessions
+    for s in sessions:
+        if s["alive"] and s.get("pid"):
+            tty = _get_tty(s["pid"])
+            if tty:
+                title = _get_terminal_title(tty)
+                if title:
+                    s["topic"] = title[:100]
+
     return sessions
+
+
+def _has_active_children(pid: int) -> bool:
+    """Check if a Claude session PID has caffeinate running (indicates active work)."""
+    try:
+        result = subprocess.run(
+            ["pgrep", "-P", str(pid), "-lf", "caffeinate"],
+            capture_output=True, text=True, timeout=2,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
 
 
 def _is_pid_alive(pid: int) -> bool:
@@ -139,24 +163,26 @@ def _extract_transcript_info(transcript_path: Path) -> dict:
         except json.JSONDecodeError:
             pass
 
-        for line in lines[:5]:
-            try:
-                msg = json.loads(line)
-                if msg.get("type") == "user" or msg.get("role") == "user":
-                    text = ""
-                    if isinstance(msg.get("message"), dict):
-                        content = msg["message"].get("content", "")
-                        if isinstance(content, str):
-                            text = content
-                        elif isinstance(content, list):
-                            for block in content:
-                                if isinstance(block, dict) and block.get("type") == "text":
-                                    text = block.get("text", "")
-                                    break
-                    info["topic"] = text[:100]
-                    break
-            except json.JSONDecodeError:
-                continue
+        # Extract topic from first user message
+        if "topic" not in info:
+            for line in lines[:5]:
+                try:
+                    msg = json.loads(line)
+                    if msg.get("type") == "user" or msg.get("role") == "user":
+                        text = ""
+                        if isinstance(msg.get("message"), dict):
+                            content = msg["message"].get("content", "")
+                            if isinstance(content, str):
+                                text = content
+                            elif isinstance(content, list):
+                                for block in content:
+                                    if isinstance(block, dict) and block.get("type") == "text":
+                                        text = block.get("text", "")
+                                        break
+                        info["topic"] = text[:100]
+                        break
+                except json.JSONDecodeError:
+                    continue
 
     except Exception:
         pass
@@ -167,7 +193,6 @@ def _extract_transcript_info(transcript_path: Path) -> dict:
 _STATUS_STYLES = {
     "ready": "[green]ready[/green]",
     "waiting": "[yellow]waiting[/yellow]",
-    "plan_ready": "[cyan]plan ready[/cyan]",
     "working": "[blue]working[/blue]",
     "terminated": "[dim]terminated[/dim]",
 }
@@ -177,9 +202,30 @@ def _infer_session_status(transcript_path: Path) -> str:
     """Infer granular session status from the last assistant message in a transcript."""
     try:
         with open(transcript_path) as f:
-            tail = collections.deque(f, maxlen=20)
+            tail = list(collections.deque(f, maxlen=20))
     except Exception:
         return "working"
+
+    # Find last assistant message index and check if user responded after it
+    last_assistant_idx = None
+    for i, line in enumerate(tail):
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if entry.get("type") in ("assistant",) or entry.get("role") == "assistant":
+            last_assistant_idx = i
+
+    user_responded = False
+    if last_assistant_idx is not None:
+        for line in tail[last_assistant_idx + 1 :]:
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if entry.get("type") in ("user", "human") or entry.get("role") in ("user", "human"):
+                user_responded = True
+                break
 
     for line in reversed(tail):
         try:
@@ -209,9 +255,9 @@ def _infer_session_status(transcript_path: Path) -> str:
                     if isinstance(block, dict) and block.get("type") == "tool_use":
                         name = block.get("name", "")
                         if name == "AskUserQuestion":
-                            return "waiting"
+                            return "ready" if user_responded else "waiting"
                         if name == "ExitPlanMode":
-                            return "plan_ready"
+                            return "ready"
                         if name == "EnterPlanMode":
                             return "planning"
                         return "working"
@@ -401,13 +447,25 @@ def session_show(ctx: click.Context, session_id: str) -> None:
                 output(f"  [dim]{role}:[/dim] {text}")
 
 
-@session.command("start")
+@session.command("start", context_settings=dict(
+    ignore_unknown_options=True,
+    allow_extra_args=True,
+    allow_interspersed_args=False,
+))
 @click.argument("key", shell_complete=complete_ticket_key)
 @click.option("--prompt", "-p", default=None, help="Initial prompt for the session.")
 @click.option("--repo", "-r", default=None, help="Start session in a specific repo worktree.")
+@click.option("--skip-permissions", is_flag=True, help="Pass --dangerously-skip-permissions (requires sandbox).")
+@click.argument("claude_args", nargs=-1, type=click.UNPROCESSED)
 @click.pass_context
-def session_start(ctx: click.Context, key: str, prompt: str | None, repo: str | None) -> None:
-    """Launch a Claude Code session focused on a specific ticket."""
+def session_start(
+    ctx: click.Context, key: str, prompt: str | None, repo: str | None,
+    skip_permissions: bool, claude_args: tuple[str, ...],
+) -> None:
+    """Launch a Claude Code session focused on a specific ticket.
+
+    Extra arguments after -- are passed through to the claude CLI.
+    """
     try:
         root = resolve_root(ctx)
     except ConfigError as exc:
@@ -424,6 +482,15 @@ def session_start(ctx: click.Context, key: str, prompt: str | None, repo: str | 
     claude_bin = shutil.which("claude")
     if not claude_bin:
         error("'claude' CLI not found on PATH. Install Claude Code first.")
+        ctx.exit(1)
+        return
+
+    # Load config for sandbox settings
+    cfg = load_config(root)
+    use_skip_permissions = skip_permissions or cfg.sandbox.skip_permissions
+
+    if use_skip_permissions and not cfg.sandbox.enabled:
+        error("--skip-permissions requires sandbox to be enabled. Set sandbox.enabled in config.yaml.")
         ctx.exit(1)
         return
 
@@ -471,9 +538,19 @@ def session_start(ctx: click.Context, key: str, prompt: str | None, repo: str | 
 
     full_prompt = "\n".join(context_parts)
 
+    # Ensure sandbox config in working directory
+    if cfg.sandbox.enabled:
+        from tutti.sandbox import write_settings
+
+        write_settings(cwd, cfg.sandbox)
+
     cmd = [claude_bin, "--add-dir", str(ticket_dir)]
+    if use_skip_permissions:
+        cmd.append("--dangerously-skip-permissions")
     if prompt:
         cmd.extend(["-p", full_prompt])
+    if claude_args:
+        cmd.extend(claude_args)
 
     success(f"Starting session for {key} in {cwd}")
 
@@ -498,6 +575,54 @@ def _get_tty(pid: int) -> str | None:
         return tty if tty and tty != "?" else None
     except Exception:
         return None
+
+
+def _get_terminal_title(tty: str) -> str | None:
+    """Read the tab/session title for a given TTY from the terminal emulator."""
+    # --- WezTerm ---
+    wezterm_bin = shutil.which("wezterm")
+    if wezterm_bin:
+        try:
+            result = subprocess.run(
+                [wezterm_bin, "cli", "list", "--format", "json"],
+                capture_output=True, text=True,
+            )
+            if result.returncode == 0:
+                panes = json.loads(result.stdout)
+                for pane in panes:
+                    if pane.get("tty_name", "").endswith(tty):
+                        return pane.get("title") or pane.get("tab_title")
+        except Exception:
+            pass
+
+    # --- iTerm2 (macOS only) ---
+    if platform.system() == "Darwin":
+        script = (
+            'tell application "iTerm2"\n'
+            "    repeat with aWindow in windows\n"
+            "        repeat with aTab in tabs of aWindow\n"
+            "            repeat with aSession in sessions of aTab\n"
+            f'                if tty of aSession ends with "{tty}" then\n'
+            "                    return name of aSession\n"
+            "                end if\n"
+            "            end repeat\n"
+            "        end repeat\n"
+            "    end repeat\n"
+            'end tell\n'
+        )
+        try:
+            result = subprocess.run(
+                ["osascript", "-e", script],
+                capture_output=True, text=True, timeout=3,
+            )
+            if result.returncode == 0:
+                title = result.stdout.strip()
+                if title:
+                    return title
+        except Exception:
+            pass
+
+    return None
 
 
 def _focus_terminal_tab(tty: str) -> bool:

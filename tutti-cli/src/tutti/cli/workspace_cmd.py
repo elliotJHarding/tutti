@@ -8,9 +8,135 @@ from pathlib import Path
 import click
 
 from tutti.cli.output import Col, error, output, success, table
-from tutti.cli.resolve import complete_ticket_key, resolve_root
-from tutti.config import ConfigError, load_config
-from tutti.workspace import enumerate_ticket_dirs, resolve_ticket_dir
+from tutti.cli.resolve import complete_repo_name, complete_ticket_key, resolve_root
+from tutti.config import ConfigError, WorkspaceConfig, load_config
+from tutti.workspace import (
+    branch_name,
+    enumerate_ticket_dirs,
+    read_issue_type,
+    resolve_ticket_dir,
+)
+
+
+# ---------------------------------------------------------------------------
+# Repo discovery helpers
+# ---------------------------------------------------------------------------
+
+
+def _scan_for_repos(
+    path: Path, repos: dict[str, Path], depth: int, max_depth: int
+) -> None:
+    if depth >= max_depth:
+        return
+    try:
+        for child in path.iterdir():
+            if not child.is_dir() or child.name.startswith("."):
+                continue
+            if (child / ".git").is_dir():
+                repos.setdefault(child.name, child)
+            elif not (child / ".git").exists():
+                _scan_for_repos(child, repos, depth + 1, max_depth)
+    except PermissionError:
+        pass
+
+
+def discover_repos(cfg: WorkspaceConfig, max_depth: int = 3) -> list[tuple[str, Path]]:
+    """Scan repoPaths recursively for git repos. Returns sorted (name, path) pairs."""
+    repos: dict[str, Path] = {}
+    for search_path in cfg.repo_paths:
+        if not search_path.is_dir():
+            continue
+        _scan_for_repos(search_path, repos, depth=0, max_depth=max_depth)
+    return sorted(repos.items())
+
+
+def find_repo(cfg: WorkspaceConfig, repo_name: str) -> Path | None:
+    """Find a single repo by name in configured repoPaths."""
+    for name, path in discover_repos(cfg):
+        if name == repo_name:
+            return path
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Branch listing
+# ---------------------------------------------------------------------------
+
+
+def list_branches(repo_path: Path) -> list[str]:
+    """Return deduplicated branch names (local + remote, stripped of origin/ prefix)."""
+    result = subprocess.run(
+        ["git", "branch", "-a", "--format=%(refname:short)"],
+        cwd=repo_path,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+    branches: set[str] = set()
+    for line in result.stdout.strip().splitlines():
+        line = line.strip()
+        if line.startswith("origin/"):
+            line = line[len("origin/"):]
+        if line and line != "HEAD":
+            branches.add(line)
+    return sorted(branches)
+
+
+# ---------------------------------------------------------------------------
+# Interactive fuzzy selection
+# ---------------------------------------------------------------------------
+
+
+def _fuzzy_select(prompt: str, choices: list[str]) -> str | None:
+    """Prompt user with a fuzzy-searchable autocomplete list."""
+    import questionary
+    from prompt_toolkit.completion import FuzzyWordCompleter
+    from prompt_toolkit.styles import Style as PtStyle, merge_styles
+
+    # prompt_toolkit styles keyed to the exact class names used by the
+    # completion menu and its fuzzy-match highlighting.
+    pt_style = PtStyle.from_dict({
+        # Menu background and normal items
+        "completion-menu": "bg:#1a1a2e #e0e0e0",
+        "completion-menu.completion": "bg:#1a1a2e #e0e0e0",
+        # Currently selected item
+        "completion-menu.completion.current": "bg:#0097a7 #ffffff bold",
+        # Fuzzy-match: non-matched characters in normal items
+        "completion-menu.completion fuzzymatch.outside": "fg:#a0a0a0",
+        # Fuzzy-match: matched characters in normal items
+        "completion-menu.completion fuzzymatch.inside": "fg:#ffffff bold",
+        "completion-menu.completion fuzzymatch.inside.character": "fg:#ffffff bold underline",
+        # Fuzzy-match: characters in the selected item
+        "completion-menu.completion.current fuzzymatch.outside": "fg:#e0e0e0",
+        "completion-menu.completion.current fuzzymatch.inside": "fg:#ffffff bold",
+        # Scrollbar
+        "scrollbar.background": "bg:#1a1a2e",
+        "scrollbar.button": "bg:#0097a7",
+    })
+
+    # questionary styles for the prompt line itself
+    q_style = questionary.Style([
+        ("qmark", "fg:ansicyan bold"),
+        ("question", "bold"),
+        ("answer", "fg:ansicyan"),
+    ])
+
+    style = merge_styles([q_style, pt_style])
+    completer = FuzzyWordCompleter(choices, WORD=True)
+
+    result = questionary.autocomplete(
+        f"{prompt}:",
+        choices=choices,
+        completer=completer,
+        style=style,
+        validate=lambda val: val in choices or "Please select from the list",
+    ).ask()
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Commands
+# ---------------------------------------------------------------------------
 
 
 @click.group()
@@ -20,15 +146,30 @@ def workspace(ctx: click.Context) -> None:
     pass
 
 
-@workspace.command("add-repo")
-@click.argument("key", shell_complete=complete_ticket_key)
-@click.argument("repo_name")
-@click.option("--branch", default=None, help="Branch name for worktree.")
+@click.command("add-repo")
+@click.argument("key", required=False, shell_complete=complete_ticket_key)
+@click.argument("repo_name", required=False, shell_complete=complete_repo_name)
+@click.argument("basebranch", required=False)
+@click.option("--branch", default=None, help="Override auto-generated feature branch name.")
 @click.pass_context
-def workspace_add_repo(
-    ctx: click.Context, key: str, repo_name: str, branch: str | None
+def add_repo(
+    ctx: click.Context,
+    key: str | None,
+    repo_name: str | None,
+    basebranch: str | None,
+    branch: str | None,
 ) -> None:
-    """Add a repo worktree to a ticket workspace."""
+    """Add a repo worktree to a ticket workspace.
+
+    All arguments are optional. Missing arguments trigger interactive fuzzy
+    search prompts.
+
+    \b
+    Examples:
+        tutti add-repo                           # fully interactive
+        tutti add-repo ERSC-1278                 # prompts for repo and base branch
+        tutti add-repo ERSC-1278 ice-claims main # no prompts
+    """
     try:
         root = resolve_root(ctx)
         cfg = load_config(root)
@@ -37,51 +178,89 @@ def workspace_add_repo(
         ctx.exit(1)
         return
 
+    # -- Resolve KEY interactively if missing --
+    if not key:
+        tickets = enumerate_ticket_dirs(root)
+        if not tickets:
+            error("No ticket directories found. Run 'tutti sync' first.")
+            ctx.exit(1)
+            return
+        choices = [f"{k} {p.name.partition('-')[2]}" for k, p in tickets]
+        selection = _fuzzy_select("Ticket", choices)
+        if not selection:
+            ctx.exit(1)
+            return
+        key = selection.split()[0]
+
     ticket_dir = resolve_ticket_dir(root, key)
     if not ticket_dir:
         error(f"No workspace found for {key}. Run 'tutti sync --force' to create ticket directories.")
         ctx.exit(1)
         return
 
-    # Search for repo in configured repo_paths
-    repo_path = None
-    available_repos: list[str] = []
-    for search_path in cfg.repo_paths:
-        if not search_path.is_dir():
-            continue
-        candidate = search_path / repo_name
-        if candidate.is_dir() and (candidate / ".git").exists():
-            repo_path = candidate
-            break
-        # Collect available repos for error message
-        for child in search_path.iterdir():
-            if child.is_dir() and (child / ".git").exists():
-                available_repos.append(child.name)
+    # -- Resolve REPO interactively if missing --
+    repos = discover_repos(cfg)
+    repo_names = [name for name, _ in repos]
 
+    if not repo_name:
+        if not repos:
+            error("No git repositories found in configured repoPaths.")
+            ctx.exit(1)
+            return
+        repo_name = _fuzzy_select("Repository", repo_names)
+        if not repo_name:
+            ctx.exit(1)
+            return
+
+    repo_path = find_repo(cfg, repo_name)
     if not repo_path:
-        msg = f"Repository '{repo_name}' not found in configured repoPaths."
-        if available_repos:
-            msg += f" Available repos: {', '.join(sorted(set(available_repos)))}"
+        msg = f"Repository '{repo_name}' not found."
+        if repo_names:
+            msg += f"\nAvailable repos: {', '.join(repo_names)}"
+        msg += f"\nSearch paths (repoPaths): {', '.join(str(p) for p in cfg.repo_paths)}"
+        msg += "\nAdd a search path: tutti config add-repo-path <dir>"
         error(msg)
         ctx.exit(1)
         return
 
-    # Create worktree
+    # -- Resolve BASEBRANCH interactively if missing --
+    if not basebranch:
+        branches = list_branches(repo_path)
+        if not branches:
+            error(f"No branches found in {repo_path}.")
+            ctx.exit(1)
+            return
+        basebranch = _fuzzy_select("Base branch", branches)
+        if not basebranch:
+            ctx.exit(1)
+            return
+
+    # -- Create worktree --
     worktree_path = ticket_dir / repo_name
-    branch_name = branch or f"{key.lower()}"
+    if branch:
+        feature_branch = branch
+    else:
+        # Extract summary slug from ticket dir name (already formatted as KEY-slug)
+        summary_slug = ticket_dir.name[len(key) + 1:]
+        issue_type = read_issue_type(ticket_dir)
+        feature_branch = branch_name(key, summary_slug, issue_type)
 
     try:
         result = subprocess.run(
-            ["git", "worktree", "add", str(worktree_path), "-b", branch_name],
+            [
+                "git", "worktree", "add",
+                str(worktree_path), "-b", feature_branch,
+                basebranch, "--no-track",
+            ],
             cwd=repo_path,
             capture_output=True,
             text=True,
             timeout=30,
         )
         if result.returncode != 0:
-            # Try without -b (branch may already exist)
+            # Branch may already exist — try without -b
             result = subprocess.run(
-                ["git", "worktree", "add", str(worktree_path), branch_name],
+                ["git", "worktree", "add", str(worktree_path), feature_branch],
                 cwd=repo_path,
                 capture_output=True,
                 text=True,
@@ -92,10 +271,22 @@ def workspace_add_repo(
                 ctx.exit(1)
                 return
 
-        success(f"Added worktree for {repo_name} at {worktree_path} (branch: {branch_name})")
+        if cfg.sandbox.enabled:
+            from tutti.sandbox import write_settings
+
+            write_settings(worktree_path, cfg.sandbox)
+
+        success(
+            f"Added worktree for {repo_name} at {worktree_path} "
+            f"(branch: {feature_branch} from {basebranch})"
+        )
     except Exception as exc:
         error(f"Failed to create worktree: {exc}")
         ctx.exit(1)
+
+
+# Register add-repo under the workspace group as well (alias)
+workspace.add_command(add_repo, "add-repo")
 
 
 @workspace.command("status")

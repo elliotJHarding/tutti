@@ -35,58 +35,6 @@ def test_priority_no_file(tmp_path: Path) -> None:
     assert "No PRIORITY.md found" in result.output
 
 
-def test_priority_set(tmp_path: Path) -> None:
-    """tutti priority set KEY1 KEY2 should write a new PRIORITY.md."""
-    runner = CliRunner()
-    _init_workspace(runner, tmp_path)
-
-    result = runner.invoke(
-        cli, ["--workspace-root", str(tmp_path), "priority", "set", "PROJ-1", "PROJ-2", "PROJ-3"]
-    )
-
-    assert result.exit_code == 0, result.output
-    assert "Priority set" in result.output
-
-    content = (tmp_path / "PRIORITY.md").read_text()
-    assert "- PROJ-1" in content
-    assert "- PROJ-2" in content
-    assert "- PROJ-3" in content
-
-
-def test_priority_set_then_show_roundtrip(tmp_path: Path) -> None:
-    """Setting priority then viewing it should show the same keys."""
-    runner = CliRunner()
-    _init_workspace(runner, tmp_path)
-
-    runner.invoke(
-        cli, ["--workspace-root", str(tmp_path), "priority", "set", "AAA-1", "BBB-2"]
-    )
-
-    result = runner.invoke(cli, ["--workspace-root", str(tmp_path), "priority"])
-
-    assert result.exit_code == 0, result.output
-    assert "AAA-1" in result.output
-    assert "BBB-2" in result.output
-
-
-def test_priority_set_overwrites(tmp_path: Path) -> None:
-    """Running priority set twice should replace the previous list."""
-    runner = CliRunner()
-    _init_workspace(runner, tmp_path)
-
-    runner.invoke(
-        cli, ["--workspace-root", str(tmp_path), "priority", "set", "OLD-1"]
-    )
-    runner.invoke(
-        cli, ["--workspace-root", str(tmp_path), "priority", "set", "NEW-1", "NEW-2"]
-    )
-
-    content = (tmp_path / "PRIORITY.md").read_text()
-    assert "OLD-1" not in content
-    assert "- NEW-1" in content
-    assert "- NEW-2" in content
-
-
 def test_priority_json_output(tmp_path: Path) -> None:
     """tutti --json priority should produce JSON output."""
     import json
@@ -102,49 +50,68 @@ def test_priority_json_output(tmp_path: Path) -> None:
 
 
 def test_priority_add_appends(tmp_path: Path) -> None:
-    """priority add should append a key to the end of the list."""
+    """priority add should append a key to the end of the file."""
     runner = CliRunner()
     _init_workspace(runner, tmp_path)
 
-    runner.invoke(cli, ["--workspace-root", str(tmp_path), "priority", "set", "AAA-1"])
     result = runner.invoke(
         cli, ["--workspace-root", str(tmp_path), "priority", "add", "BBB-2"]
     )
 
     assert result.exit_code == 0, result.output
     content = (tmp_path / "PRIORITY.md").read_text()
-    assert "- AAA-1" in content
     assert "- BBB-2" in content
-    # BBB-2 should come after AAA-1
-    assert content.index("AAA-1") < content.index("BBB-2")
 
 
-def test_priority_remove_existing(tmp_path: Path) -> None:
-    """priority remove should remove a key from the list."""
+def test_priority_add_with_note(tmp_path: Path) -> None:
+    """priority add KEY NOTE should append '- KEY — note' to the file."""
     runner = CliRunner()
     _init_workspace(runner, tmp_path)
 
-    runner.invoke(
-        cli, ["--workspace-root", str(tmp_path), "priority", "set", "AAA-1", "BBB-2"]
-    )
     result = runner.invoke(
-        cli, ["--workspace-root", str(tmp_path), "priority", "remove", "AAA-1"]
+        cli,
+        ["--workspace-root", str(tmp_path), "priority", "add", "ERSC-1278", "PR", "open,", "awaiting", "review"],
     )
 
     assert result.exit_code == 0, result.output
     content = (tmp_path / "PRIORITY.md").read_text()
-    assert "AAA-1" not in content
-    assert "- BBB-2" in content
+    assert "- ERSC-1278 — PR open, awaiting review" in content
 
 
-def test_priority_remove_missing(tmp_path: Path) -> None:
-    """priority remove for a key not in the list should warn."""
+def test_priority_add_preserves_existing(tmp_path: Path) -> None:
+    """priority add should not destroy existing rich content."""
     runner = CliRunner()
     _init_workspace(runner, tmp_path)
 
+    rich_content = (
+        "# Priority\n\n"
+        "## Current Focus\n\n"
+        "- **AAA-1** — important work\n"
+    )
+    (tmp_path / "PRIORITY.md").write_text(rich_content)
+
     result = runner.invoke(
-        cli, ["--workspace-root", str(tmp_path), "priority", "remove", "ZZZ-99"]
+        cli, ["--workspace-root", str(tmp_path), "priority", "add", "BBB-2"]
     )
 
     assert result.exit_code == 0, result.output
-    assert "not in" in result.output.lower()
+    content = (tmp_path / "PRIORITY.md").read_text()
+    # Original content preserved
+    assert "## Current Focus" in content
+    assert "**AAA-1** — important work" in content
+    # New entry appended
+    assert "- BBB-2" in content
+
+
+def test_priority_add_warns_duplicate(tmp_path: Path) -> None:
+    """priority add should warn when the key already exists in the file."""
+    runner = CliRunner()
+    _init_workspace(runner, tmp_path)
+    (tmp_path / "PRIORITY.md").write_text("# Priority\n\n- AAA-1\n")
+
+    result = runner.invoke(
+        cli, ["--workspace-root", str(tmp_path), "priority", "add", "AAA-1"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "already in" in result.output.lower()

@@ -138,20 +138,17 @@ class TestArchiveRestore:
         assert result.exit_code != 0
         assert "not found" in result.output.lower()
 
-    def test_restore_under_epic(self, tmp_path: Path) -> None:
+    def test_restore_goes_to_root(self, tmp_path: Path) -> None:
         _init_workspace(tmp_path)
-        # Create an epic directory.
-        epic = tmp_path / "ERSC-50-big-epic"
-        epic.mkdir()
         _make_archived_ticket(tmp_path, "ERSC-100", "old-task")
 
         runner = CliRunner()
         result = runner.invoke(
             cli,
             ["--workspace-root", str(tmp_path),
-             "archive", "restore", "ERSC-100", "--epic", "ERSC-50"],
+             "archive", "restore", "ERSC-100"],
         )
 
         assert result.exit_code == 0, result.output
         assert "Restored" in result.output
-        assert (epic / "ERSC-100-old-task").is_dir()
+        assert (tmp_path / "ERSC-100-old-task").is_dir()
