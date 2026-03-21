@@ -11,7 +11,6 @@ COMMANDS = {
     "doctor": "duct.cli.doctor_cmd:doctor",
     "init": "duct.cli.init_cmd:init",
     "orchestrate": "duct.cli.orchestrate_cmd:orchestrate",
-    "priority": "duct.cli.priority_cmd:priority",
     "session": "duct.cli.session_cmd:session",
     "status": "duct.cli.status_cmd:status",
     "sync": "duct.cli.sync_cmd:sync",

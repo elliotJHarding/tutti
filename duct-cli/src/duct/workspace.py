@@ -10,12 +10,15 @@ Epic metadata lives in ``{root}/epics/`` as markdown files, and each ticket's
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
+from datetime import datetime, timezone
 from pathlib import Path
 
 from duct.markdown import TICKET_KEY_PATTERN, generate_frontmatter
+from duct.models import RepoEntry, Workspace
 
 _SLUG_STRIP_RE = re.compile(r"[^a-z0-9]+")
 
@@ -72,6 +75,75 @@ def ticket_dir_name(key: str, summary: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# workspace.json read/write
+# ---------------------------------------------------------------------------
+
+
+def load_workspace(workspace_dir: Path) -> Workspace:
+    """Load workspace metadata from .duct/workspace.json."""
+    json_path = workspace_dir / ".duct" / "workspace.json"
+    if not json_path.exists():
+        raise FileNotFoundError(f"No workspace.json at {json_path}")
+    data = json.loads(json_path.read_text())
+    repos = [
+        RepoEntry(
+            name=r["name"],
+            origin=r.get("origin", ""),
+            branch=r.get("branch", ""),
+            base_branch=r.get("base_branch", "main"),
+        )
+        for r in data.get("repos", [])
+    ]
+    return Workspace(
+        ticket_key=data["ticket_key"],
+        created_at=data.get("created_at", ""),
+        branch_type=data.get("branch_type", "feature"),
+        default_branch=data.get("default_branch", ""),
+        priority=data.get("priority", 0),
+        repos=repos,
+        path=str(workspace_dir),
+    )
+
+
+def save_workspace(ws: Workspace) -> None:
+    """Write workspace metadata to .duct/workspace.json."""
+    if not ws.path:
+        raise ValueError("Workspace.path must be set before saving")
+    duct_dir = Path(ws.path) / ".duct"
+    duct_dir.mkdir(parents=True, exist_ok=True)
+    data = {
+        "ticket_key": ws.ticket_key,
+        "created_at": ws.created_at,
+        "branch_type": ws.branch_type,
+        "default_branch": ws.default_branch,
+        "priority": ws.priority,
+        "repos": [
+            {
+                "name": r.name,
+                "origin": r.origin,
+                "branch": r.branch,
+                "base_branch": r.base_branch,
+            }
+            for r in ws.repos
+        ],
+    }
+    (duct_dir / "workspace.json").write_text(json.dumps(data, indent=2))
+
+
+def _init_workspace_json(workspace_dir: Path, ticket_key: str) -> None:
+    """Write a minimal workspace.json if one does not already exist."""
+    json_path = workspace_dir / ".duct" / "workspace.json"
+    if json_path.exists():
+        return
+    ws = Workspace(
+        ticket_key=ticket_key,
+        created_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        path=str(workspace_dir),
+    )
+    save_workspace(ws)
+
+
+# ---------------------------------------------------------------------------
 # Directory resolution
 # ---------------------------------------------------------------------------
 
@@ -124,6 +196,7 @@ def ensure_ticket_dir(
 
     # Always ensure the orchestrator subdirectory exists.
     (target / "orchestrator").mkdir(exist_ok=True)
+    _init_workspace_json(target, key)
     return target
 
 
@@ -204,30 +277,6 @@ def enumerate_ticket_dirs(root: Path) -> list[tuple[str, Path]]:
 
 
 # ---------------------------------------------------------------------------
-# Priority helpers
-# ---------------------------------------------------------------------------
-
-def read_priority_keys(root: Path) -> list[str]:
-    """Read PRIORITY.md and return ticket keys in priority order.
-
-    Works with both flat format (``- KEY``) and rich format
-    (``- **KEY** — notes``, sections, commentary).  Any markdown list
-    item containing a ticket key is recognised.
-    """
-    priority_file = root / "PRIORITY.md"
-    if not priority_file.exists():
-        return []
-    keys: list[str] = []
-    for line in priority_file.read_text().splitlines():
-        stripped = line.strip()
-        if stripped.startswith("- "):
-            m = TICKET_KEY_PATTERN.search(stripped)
-            if m:
-                keys.append(m.group(0))
-    return keys
-
-
-# ---------------------------------------------------------------------------
 # Archive / restore
 # ---------------------------------------------------------------------------
 
@@ -235,7 +284,6 @@ def archive_ticket(root: Path, key: str) -> Path | None:
     """Move the ticket directory for *key* into ``root/.archive/``.
 
     Returns the archive path, or None if no matching ticket dir was found.
-    Priority cleanup is handled by the orchestrator.
     """
     src = resolve_ticket_dir(root, key)
     if src is None:

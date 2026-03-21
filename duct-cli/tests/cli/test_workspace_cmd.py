@@ -214,6 +214,65 @@ def test_workspace_path_not_found(tmp_path: Path) -> None:
 
 
 # ---------------------------------------------------------------------------
+# workspace priority tests
+# ---------------------------------------------------------------------------
+
+
+def _create_ticket_dir_with_workspace(root: Path, key: str, slug: str = "") -> Path:
+    """Create a ticket directory with a minimal workspace.json."""
+    dirname = f"{key}-{slug}" if slug else f"{key}-{key.lower()}"
+    ticket_dir = root / dirname
+    (ticket_dir / "orchestrator").mkdir(parents=True)
+    duct_dir = ticket_dir / ".duct"
+    duct_dir.mkdir()
+    (duct_dir / "workspace.json").write_text(
+        json.dumps({"ticket_key": key, "created_at": "2024-01-01T00:00:00Z"})
+    )
+    return ticket_dir
+
+
+def test_workspace_priority_sets_value(tmp_path: Path) -> None:
+    """workspace priority KEY VALUE should write priority to workspace.json."""
+    runner = CliRunner()
+    _init_workspace(runner, tmp_path)
+    ticket_dir = _create_ticket_dir_with_workspace(tmp_path, "PROJ-10", "my-feature")
+
+    result = runner.invoke(
+        cli, ["--workspace-root", str(tmp_path), "workspace", "priority", "PROJ-10", "42"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "42" in result.output
+    data = json.loads((ticket_dir / ".duct" / "workspace.json").read_text())
+    assert data["priority"] == 42
+
+
+def test_workspace_priority_updates_value(tmp_path: Path) -> None:
+    """workspace priority should overwrite a previously set priority."""
+    runner = CliRunner()
+    _init_workspace(runner, tmp_path)
+    ticket_dir = _create_ticket_dir_with_workspace(tmp_path, "PROJ-20", "another-feature")
+
+    runner.invoke(cli, ["--workspace-root", str(tmp_path), "workspace", "priority", "PROJ-20", "5"])
+    runner.invoke(cli, ["--workspace-root", str(tmp_path), "workspace", "priority", "PROJ-20", "99"])
+
+    data = json.loads((ticket_dir / ".duct" / "workspace.json").read_text())
+    assert data["priority"] == 99
+
+
+def test_workspace_priority_not_found(tmp_path: Path) -> None:
+    """workspace priority should fail when the ticket does not exist."""
+    runner = CliRunner()
+    _init_workspace(runner, tmp_path)
+
+    result = runner.invoke(
+        cli, ["--workspace-root", str(tmp_path), "workspace", "priority", "NOPE-1", "10"]
+    )
+
+    assert result.exit_code != 0
+
+
+# ---------------------------------------------------------------------------
 # add-repo tests (non-interactive, all args provided)
 # ---------------------------------------------------------------------------
 

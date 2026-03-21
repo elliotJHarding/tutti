@@ -70,7 +70,6 @@ def doctor(ctx: click.Context) -> None:
         all_ok &= _check("jira.jql set", bool(cfg.jira_jql), jql_detail)
 
     # 4. Workspace files
-    all_ok &= _check("PRIORITY.md exists", (root / "PRIORITY.md").exists())
     all_ok &= _check("WORKFLOW.md exists", (root / "WORKFLOW.md").exists())
 
     # 5. Environment variables / auth

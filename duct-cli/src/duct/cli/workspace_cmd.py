@@ -10,11 +10,14 @@ import click
 from duct.cli.output import Col, error, output, success, table
 from duct.cli.resolve import complete_repo_name, complete_ticket_key, resolve_root
 from duct.config import ConfigError, WorkspaceConfig, load_config
+from duct.models import RepoEntry
 from duct.workspace import (
     branch_name,
     enumerate_ticket_dirs,
+    load_workspace,
     read_issue_type,
     resolve_ticket_dir,
+    save_workspace,
 )
 
 
@@ -276,6 +279,31 @@ def add_repo(
 
             write_settings(worktree_path, cfg.sandbox)
 
+        # Persist repo entry to workspace.json (best-effort)
+        try:
+            origin_result = subprocess.run(
+                ["git", "remote", "get-url", "origin"],
+                cwd=repo_path,
+                capture_output=True,
+                text=True,
+                timeout=10,
+            )
+            origin_url = origin_result.stdout.strip() if origin_result.returncode == 0 else ""
+        except Exception:
+            origin_url = ""
+        try:
+            ws = load_workspace(ticket_dir)
+            if repo_name not in {r.name for r in ws.repos}:
+                ws.repos.append(RepoEntry(
+                    name=repo_name,
+                    origin=origin_url,
+                    branch=feature_branch,
+                    base_branch=basebranch,
+                ))
+                save_workspace(ws)
+        except Exception:
+            pass
+
         success(
             f"Added worktree for {repo_name} at {worktree_path} "
             f"(branch: {feature_branch} from {basebranch})"
@@ -334,6 +362,37 @@ def workspace_status(ctx: click.Context) -> None:
         Col("Path", max_width=50),
     ]
     table("Workspace Status", columns, rows, data=data_list)
+
+
+@workspace.command("priority")
+@click.argument("key", shell_complete=complete_ticket_key)
+@click.argument("value", type=int)
+@click.pass_context
+def workspace_priority(ctx: click.Context, key: str, value: int) -> None:
+    """Set the priority for a ticket workspace."""
+    try:
+        root = resolve_root(ctx)
+    except ConfigError as exc:
+        error(str(exc))
+        ctx.exit(1)
+        return
+
+    ticket_dir = resolve_ticket_dir(root, key)
+    if not ticket_dir:
+        error(f"No workspace found for {key}.")
+        ctx.exit(1)
+        return
+
+    try:
+        ws = load_workspace(ticket_dir)
+        ws.priority = value
+        save_workspace(ws)
+    except Exception as exc:
+        error(f"Failed to update workspace: {exc}")
+        ctx.exit(1)
+        return
+
+    success(f"Priority set to {value} for {key}.")
 
 
 @workspace.command("path")

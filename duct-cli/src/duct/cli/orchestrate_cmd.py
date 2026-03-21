@@ -72,23 +72,19 @@ def _build_prompt(ticket_key: str | None, root: Path, trust: TrustConfig) -> str
         "active work in this workspace and take action to keep it moving."
     )
     parts.append("")
-    parts.append("Start by reading PRIORITY.md to understand current focus, then "
-                 "scan ticket directories to discover active work. For each ticket, "
+    parts.append("Start by scanning ticket directories to discover active work. For each ticket, "
                  "read the orchestrator/ directory to understand its state — sync "
-                 "snapshots (TICKET.md, PULL_REQUESTS.md, CI.md, CLAUDE_SESSIONS.md, "
+                 "snapshots (TICKET.md, prs/, CI.md, CLAUDE_SESSIONS.md, "
                  "WORKSPACE.md) and authored artifacts (BACKGROUND.md, AC.md, SPEC.md, "
-                 "ORCHESTRATOR.md, etc.).")
+                 "ORCHESTRATOR.md, etc.). Ticket priority is stored in each ticket's "
+                 ".duct/workspace.json as a `priority` integer; higher values indicate "
+                 "higher priority.")
     parts.append("")
     parts.append("Ticket directories and sync snapshots are created by `duct sync`, "
                  "not by the orchestrator. If a ticket key appears in PRIORITY.md but "
                  "has no directory at the workspace root, it may not have been synced "
                  "yet — do not create it manually. The `.archive/` directory contains "
                  "completed tickets and should be ignored.")
-    parts.append("")
-    parts.append("You maintain PRIORITY.md — you may restructure, annotate, reorder, "
-                 "and remove entries freely. Remove entries for archived or closed "
-                 "tickets. Each entry must be a markdown list item (`- `) containing "
-                 "a ticket key so the CLI can parse it.")
     parts.append("")
     parts.append("See WORKFLOW.md for development lifecycle guidance.")
 

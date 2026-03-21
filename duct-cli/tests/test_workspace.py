@@ -1,19 +1,24 @@
 """Tests for duct.workspace utilities."""
 
+import json
 import os
 from pathlib import Path
 
+import pytest
+
+from duct.models import RepoEntry, Workspace
 from duct.workspace import (
     archive_ticket,
     branch_name,
     ensure_epic_link,
     ensure_ticket_dir,
     enumerate_ticket_dirs,
+    load_workspace,
     orchestrator_dir,
     read_issue_type,
-    read_priority_keys,
     resolve_ticket_dir,
     restore_ticket,
+    save_workspace,
     slug,
     ticket_dir_name,
 )
@@ -247,38 +252,6 @@ class TestEnumerateTicketDirs:
 
 
 # ---------------------------------------------------------------------------
-# read_priority_keys()
-# ---------------------------------------------------------------------------
-
-class TestReadPriorityKeys:
-    def test_flat_format(self, tmp_workspace: Path):
-        (tmp_workspace / "PRIORITY.md").write_text(
-            "# Priority\n\n- ERSC-100\n- ERSC-200\n"
-        )
-        assert read_priority_keys(tmp_workspace) == ["ERSC-100", "ERSC-200"]
-
-    def test_rich_format(self, tmp_workspace: Path):
-        (tmp_workspace / "PRIORITY.md").write_text(
-            "# Priority\n\n"
-            "## Current Focus\n\n"
-            "- **ERSC-100** — PR open, awaiting review\n"
-            "- **ERSC-200** — spec in progress\n\n"
-            "## Needs Attention\n\n"
-            "- ERSC-300 — blocked on deploy\n"
-        )
-        assert read_priority_keys(tmp_workspace) == [
-            "ERSC-100", "ERSC-200", "ERSC-300",
-        ]
-
-    def test_no_file(self, tmp_workspace: Path):
-        assert read_priority_keys(tmp_workspace) == []
-
-    def test_empty_file(self, tmp_workspace: Path):
-        (tmp_workspace / "PRIORITY.md").write_text("")
-        assert read_priority_keys(tmp_workspace) == []
-
-
-# ---------------------------------------------------------------------------
 # archive / restore
 # ---------------------------------------------------------------------------
 
@@ -326,3 +299,73 @@ class TestRestoreTicket:
 
     def test_returns_none_when_no_archive(self, tmp_workspace: Path):
         assert restore_ticket(tmp_workspace, "ERSC-999") is None
+
+
+# ---------------------------------------------------------------------------
+# workspace.json (load_workspace / save_workspace / ensure_ticket_dir init)
+# ---------------------------------------------------------------------------
+
+
+class TestWorkspaceJson:
+    def test_ensure_ticket_dir_creates_workspace_json(self, tmp_workspace: Path):
+        ticket_dir = ensure_ticket_dir(tmp_workspace, "ERSC-900", "workspace json test")
+        ws_json = ticket_dir / ".duct" / "workspace.json"
+        assert ws_json.exists()
+        data = json.loads(ws_json.read_text())
+        assert data["ticket_key"] == "ERSC-900"
+        assert "created_at" in data
+        assert data["repos"] == []
+
+    def test_ensure_ticket_dir_workspace_json_idempotent(self, tmp_workspace: Path):
+        d = ensure_ticket_dir(tmp_workspace, "ERSC-901", "idempotent test")
+        first_created_at = json.loads((d / ".duct" / "workspace.json").read_text())["created_at"]
+        ensure_ticket_dir(tmp_workspace, "ERSC-901", "idempotent test")
+        second_created_at = json.loads((d / ".duct" / "workspace.json").read_text())["created_at"]
+        assert first_created_at == second_created_at
+
+    def test_save_and_load_round_trip(self, tmp_workspace: Path):
+        ws_dir = tmp_workspace / "ERSC-910-my-ticket"
+        ws_dir.mkdir()
+        repo = RepoEntry(
+            name="ice-claims",
+            origin="git@github.com:org/ice-claims.git",
+            branch="feature/ERSC-910-my-ticket",
+            base_branch="main",
+        )
+        ws = Workspace(
+            ticket_key="ERSC-910",
+            created_at="2025-01-01T00:00:00Z",
+            repos=[repo],
+            path=str(ws_dir),
+        )
+
+        save_workspace(ws)
+        loaded = load_workspace(ws_dir)
+
+        assert loaded.ticket_key == "ERSC-910"
+        assert loaded.created_at == "2025-01-01T00:00:00Z"
+        assert len(loaded.repos) == 1
+        r = loaded.repos[0]
+        assert r.name == "ice-claims"
+        assert r.origin == "git@github.com:org/ice-claims.git"
+        assert r.branch == "feature/ERSC-910-my-ticket"
+        assert r.base_branch == "main"
+
+    def test_save_does_not_persist_path_field(self, tmp_workspace: Path):
+        ws_dir = tmp_workspace / "ERSC-911-ticket"
+        ws_dir.mkdir()
+        ws = Workspace(ticket_key="ERSC-911", created_at="2025-01-01T00:00:00Z", path=str(ws_dir))
+        save_workspace(ws)
+        data = json.loads((ws_dir / ".duct" / "workspace.json").read_text())
+        assert "path" not in data
+
+    def test_load_missing_raises(self, tmp_workspace: Path):
+        ws_dir = tmp_workspace / "ERSC-912-missing"
+        ws_dir.mkdir()
+        with pytest.raises(FileNotFoundError):
+            load_workspace(ws_dir)
+
+    def test_save_no_path_raises(self):
+        ws = Workspace(ticket_key="ERSC-913", created_at="2025-01-01T00:00:00Z")
+        with pytest.raises(ValueError):
+            save_workspace(ws)

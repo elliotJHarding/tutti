@@ -10,13 +10,6 @@ from duct.cli.output import output, success
 from duct.config import SandboxConfig, WorkspaceConfig, save_config
 from duct.sandbox import write_settings
 
-_PRIORITY_TEMPLATE = """\
-# Priority
-
-<!-- List ticket keys in priority order, one per line. -->
-<!-- Both the developer and orchestrator can edit this file. -->
-"""
-
 _WORKFLOW_TEMPLATE = """\
 # Workflow
 
@@ -55,10 +48,8 @@ A ticket is done when all relevant concerns are addressed. Not every concern app
 
 ## Attention and Priority
 
-- Read PRIORITY.md first. It tells you where to focus.
-- Each entry must be a markdown list item (`- `) containing a ticket key. You may add sections, notes, and formatting around entries.
+- Ticket priority is stored in each workspace's `.duct/workspace.json` as a `priority` integer. Higher values mean higher priority. Set it with `duct workspace priority KEY VALUE`.
 - Urgent signals override stated priorities: failing CI, unaddressed review feedback, sessions waiting for input.
-- You can update PRIORITY.md if signals warrant it (e.g., a CI failure bumps a ticket up).
 - Spread attention across the portfolio — don't tunnel-vision on one ticket while others stall.
 
 ## Quality Standards per Artifact
@@ -82,7 +73,7 @@ Implementation isn't binary — it's a spectrum from "not started" to "done and 
 
 - **WORKSPACE.md** (sync snapshot) — Shows git branch state, uncommitted changes, and worktree health. Key questions: Does the branch have commits beyond the base? Are there uncommitted changes that suggest active work? Is the worktree clean or dirty?
 - **CLAUDE_SESSIONS.md** (sync snapshot) — Shows active, idle, and recently terminated Claude Code sessions working on this ticket. Key questions: Is there an active session right now? Did a recent session complete its work or get stuck? What files did sessions touch?
-- **PULL_REQUESTS.md** (sync snapshot) — Shows whether PRs exist and their state. A PR's existence means implementation reached a point the developer considered ready for review.
+- **prs/** (sync snapshot) — Individual PR files (PR-{number}-{repo}.md) with full description, branch info, diff hunks, and review comments. A PR's existence means implementation reached a point the developer considered ready for review.
 - **CI.md** (sync snapshot) — Build results. Passing CI on a PR branch is a strong signal that implementation is functionally complete. Failing CI tells you what's broken.
 
 ### Signals from the worktree itself
@@ -172,7 +163,7 @@ This is a duct workspace. See WORKFLOW.md for development lifecycle guidance.
 - Each ticket has a directory named {KEY}-{slug}/
 - Ticket artifacts live in the orchestrator/ subdirectory
 - Files with `source: sync` frontmatter are overwritten by sync — do not edit them
-- PRIORITY.md at the workspace root indicates current focus
+- Ticket priority is stored in `.duct/workspace.json` per ticket; set with `duct workspace priority KEY VALUE`
 """
 
 
@@ -196,7 +187,7 @@ def _create_if_missing(path: Path, content: str) -> bool:
 @click.command()
 @click.pass_context
 def init(ctx: click.Context) -> None:
-    """Create config.yaml, PRIORITY.md, WORKFLOW.md, and .claude/ directory."""
+    """Create config.yaml, WORKFLOW.md, and .claude/ directory."""
     root = _resolve_root(ctx)
     root.mkdir(parents=True, exist_ok=True)
 
@@ -211,12 +202,6 @@ def init(ctx: click.Context) -> None:
         created.append("config.yaml")
     else:
         existed.append("config.yaml")
-
-    # PRIORITY.md
-    if _create_if_missing(root / "PRIORITY.md", _PRIORITY_TEMPLATE):
-        created.append("PRIORITY.md")
-    else:
-        existed.append("PRIORITY.md")
 
     # WORKFLOW.md
     if _create_if_missing(root / "WORKFLOW.md", _WORKFLOW_TEMPLATE):

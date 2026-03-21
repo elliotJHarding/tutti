@@ -137,14 +137,6 @@ class TestPromptContent:
         assert "do not create it manually" in prompt
         assert ".archive/" in prompt
 
-    def test_prompt_includes_priority_format_guidance(self, tmp_path: Path) -> None:
-        trust = TrustConfig()
-        prompt = _build_prompt(None, tmp_path, trust)
-        assert "maintain PRIORITY.md" in prompt
-        assert "markdown list item" in prompt
-        assert "ticket key" in prompt
-
-
 class TestStreamFormatting:
     def test_init_event(self) -> None:
         event = json.dumps({"type": "system", "subtype": "init", "model": "opus-4"})

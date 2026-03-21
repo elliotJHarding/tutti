@@ -1,4 +1,4 @@
-"""duct status — unified dashboard showing priority-ordered tickets with context."""
+"""duct status — unified dashboard showing all tracked tickets with context."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from duct.cli.output import Col, error, output, section, table
 from duct.cli.resolve import resolve_root
 from duct.config import ConfigError
 from duct.markdown import extract_table, parse_frontmatter
-from duct.workspace import enumerate_ticket_dirs, read_priority_keys
+from duct.workspace import enumerate_ticket_dirs
 
 
 def _parse_ticket_md(content: str) -> dict[str, str]:
@@ -39,16 +39,26 @@ def _parse_ticket_md(content: str) -> dict[str, str]:
 
 
 def _count_prs(ticket_dir: Path) -> tuple[int, str]:
-    """Count PRs and extract CI status from PULL_REQUESTS.md."""
-    pr_md = ticket_dir / "orchestrator" / "PULL_REQUESTS.md"
-    if not pr_md.exists():
+    """Count PRs and extract CI status from orchestrator/prs/ directory."""
+    prs_dir = ticket_dir / "orchestrator" / "prs"
+    if not prs_dir.is_dir():
         return 0, ""
 
-    content = pr_md.read_text(encoding="utf-8")
-    pr_count = len(re.findall(r"^## #\d+", content, re.MULTILINE))
+    pr_files = list(prs_dir.glob("PR-*.md"))
+    if not pr_files:
+        return 0, ""
 
-    # Extract CI statuses
-    ci_statuses = re.findall(r"\*\*CI\*\*:\s*(\S+)", content)
+    pr_count = len(pr_files)
+    ci_statuses: list[str] = []
+    for pr_file in pr_files:
+        try:
+            content = pr_file.read_text(encoding="utf-8")
+            m = re.search(r"^\*\*CI:\*\* (\S+)", content, re.MULTILINE)
+            if m:
+                ci_statuses.append(m.group(1))
+        except Exception:
+            pass
+
     if not ci_statuses:
         ci_summary = ""
     elif all(s == "passing" for s in ci_statuses):
@@ -179,10 +189,6 @@ def status(ctx: click.Context, show_all: bool, show_closed: bool) -> None:
         output("No tracked tickets. Run 'duct sync --force' to get started.")
         return
 
-    # Build priority ordering
-    priority_keys = read_priority_keys(root)
-    priority_map = {k: i for i, k in enumerate(priority_keys)}
-
     entries: list[dict] = []
     for key, path in tickets:
         ticket_md = path / "orchestrator" / "TICKET.md"
@@ -199,16 +205,11 @@ def status(ctx: click.Context, show_all: bool, show_closed: bool) -> None:
         age = _sync_age(path)
         proposals = _read_proposed_actions(path)
 
-        pri_pos = priority_map.get(key)
-        pri_str = f"#{pri_pos + 1}" if pri_pos is not None else ""
-
         entries.append({
             "key": info.get("key", key),
             "summary": info.get("summary", ""),
             "status": info.get("status", ""),
             "category": info.get("category", ""),
-            "priority_position": pri_pos if pri_pos is not None else len(priority_keys),
-            "priority": pri_str,
             "prs": pr_count,
             "ci": ci_status,
             "sessions": sessions,
@@ -217,9 +218,6 @@ def status(ctx: click.Context, show_all: bool, show_closed: bool) -> None:
             "proposed_actions": proposals,
             "path": str(path),
         })
-
-    # Sort by priority position (prioritized tickets first, then the rest)
-    entries.sort(key=lambda e: e["priority_position"])
 
     # Filter by status
     if show_closed:
@@ -234,7 +232,6 @@ def status(ctx: click.Context, show_all: bool, show_closed: bool) -> None:
         return
 
     columns: list[str | Col] = [
-        Col("Pri", justify="right"),
         "Key",
         "Status",
         Col("Category", max_width=20),
@@ -286,7 +283,6 @@ def status(ctx: click.Context, show_all: bool, show_closed: bool) -> None:
             sync_str = sync_raw
 
         rows.append([
-            e["priority"],
             e["key"],
             e["status"],
             e["category"],

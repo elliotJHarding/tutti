@@ -55,6 +55,15 @@ class PRComment:
     body: str
     path: str | None = None
     line: int | None = None
+    diff_hunk: str | None = None
+
+
+@dataclass(frozen=True)
+class ReviewThread:
+    """A pull request review thread (inline code comment thread)."""
+
+    is_resolved: bool
+    comments: list[PRComment] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -73,8 +82,34 @@ class PullRequest:
     created_at: str  # ISO 8601
     updated_at: str  # ISO 8601
     branch: str = ""
+    base_branch: str = ""
+    body: str = ""
     reviewers: list[Reviewer] = field(default_factory=list)
     comments: list[PRComment] = field(default_factory=list)
+    review_threads: list[ReviewThread] = field(default_factory=list)
+
+
+@dataclass
+class RepoEntry:
+    """A git repo tracked in a ticket workspace."""
+
+    name: str
+    origin: str
+    branch: str
+    base_branch: str = "main"
+
+
+@dataclass
+class Workspace:
+    """Metadata for a ticket workspace, stored in .duct/workspace.json."""
+
+    ticket_key: str
+    created_at: str
+    branch_type: str = "feature"
+    default_branch: str = ""
+    priority: int = 0
+    repos: list[RepoEntry] = field(default_factory=list)
+    path: str | None = None  # runtime only, not serialized
 
 
 @dataclass(frozen=True)

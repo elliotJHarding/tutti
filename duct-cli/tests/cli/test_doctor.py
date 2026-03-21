@@ -37,20 +37,19 @@ def test_doctor_invalid_config(tmp_path: Path):
     assert result.exit_code != 0 or "FAIL" in result.output
 
 
-def test_doctor_missing_priority_and_workflow(tmp_path: Path):
+def test_doctor_missing_workflow(tmp_path: Path):
     _init_workspace(tmp_path)
     runner = CliRunner()
 
     result = runner.invoke(cli, ["--workspace-root", str(tmp_path), "doctor"])
 
     assert "FAIL" in result.output
-    assert "PRIORITY.md" in result.output
+    assert "PRIORITY.md" not in result.output
     assert "WORKFLOW.md" in result.output
 
 
 def test_doctor_missing_auth(tmp_path: Path):
     _init_workspace(tmp_path)
-    (tmp_path / "PRIORITY.md").write_text("# Priority\n")
     (tmp_path / "WORKFLOW.md").write_text("# Workflow\n")
     runner = CliRunner()
 
@@ -63,7 +62,6 @@ def test_doctor_missing_auth(tmp_path: Path):
 
 def test_doctor_happy_path(tmp_path: Path):
     _init_workspace(tmp_path)
-    (tmp_path / "PRIORITY.md").write_text("# Priority\n")
     (tmp_path / "WORKFLOW.md").write_text("# Workflow\n")
     runner = CliRunner()
 

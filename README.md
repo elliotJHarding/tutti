@@ -42,13 +42,12 @@ duct sync sessions                 Sync Claude Code session data
 duct sync workspace                Sync local git workspace state
 duct ticket list                   List tracked tickets
 duct ticket show <KEY>             Show ticket details and artifacts
-duct workspace create <KEY>        Create workspace for a ticket
 duct workspace add-repo <KEY> <R>  Add a repo worktree
+duct workspace priority <KEY> <N>  Set priority for a ticket workspace
 duct workspace status              Show workspace health
+duct workspace path <KEY>          Print ticket workspace path
 duct archive list                  List archived tickets
 duct archive restore <KEY>         Restore an archived ticket
-duct priority                      Show priority list
-duct priority set <KEY> [KEY...]   Set priority order
 duct orchestrate                   Launch orchestrator session
 duct orchestrate --ticket <KEY>    Focus on a specific ticket
 ```
@@ -60,26 +59,31 @@ All commands support `--json` for structured output and `--workspace-root` to ov
 ```
 {workspace_root}/
     config.yaml
-    PRIORITY.md
     WORKFLOW.md
     .claude/CLAUDE.md
-    {EPIC_KEY}-{slug}/
-        {TICKET_KEY}-{slug}/
-            orchestrator/
-                TICKET.md              # sync: Jira data
-                PULL_REQUESTS.md       # sync: GitHub PRs
-                CI.md                  # sync: build status
-                CLAUDE_SESSIONS.md     # sync: active sessions
-                WORKSPACE.md           # sync: git state
-                BACKGROUND.md          # authored: context
-                AC.md                  # authored: acceptance criteria
-                SPEC.md                # authored: technical spec
-                ORCHESTRATOR.md        # authored: working notes
-            repo-worktree/
+    {TICKET_KEY}-{slug}/
+        .duct/
+            workspace.json             # ticket key, creation time, priority, tracked repos
+        orchestrator/
+            TICKET.md                  # sync: Jira data
+            prs/
+                PR-{number}-{repo}.md  # sync: one file per GitHub PR
+            CI.md                      # sync: build status
+            CLAUDE_SESSIONS.md         # sync: active sessions
+            WORKSPACE.md               # sync: git state
+            BACKGROUND.md              # authored: context
+            AC.md                      # authored: acceptance criteria
+            SPEC.md                    # authored: technical spec
+            ORCHESTRATOR.md            # authored: working notes
+        repo-worktree/
+    epics/
+        {EPIC_KEY}-{slug}.md
     .archive/
 ```
 
 Files with `source: sync` frontmatter are overwritten each sync cycle. Authored files are created by the developer or orchestrator and persist.
+
+Each PR file (`prs/PR-{number}-{repo}.md`) includes the PR description, branch info, reviewer states, unresolved inline review comments with diff context, and general comments.
 
 ## Development
 
