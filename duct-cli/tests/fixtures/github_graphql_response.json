@@ -16,8 +16,11 @@
           "updatedAt": "2026-03-15T14:30:00Z",
           "mergedAt": null,
           "headRefName": "feature/ERSC-1278-fix-auth",
+          "baseRefName": "main",
+          "body": "Fixes the authentication token expiry bug.",
           "repository": {
-            "nameWithOwner": "acme/backend"
+            "nameWithOwner": "acme/backend",
+            "name": "backend"
           },
           "author": {
             "login": "alice"
@@ -33,9 +36,6 @@
                 "author": { "login": "bob" }
               }
             ]
-          },
-          "reviewRequests": {
-            "nodes": []
           },
           "commits": {
             "nodes": [
@@ -60,6 +60,7 @@
           "reviewThreads": {
             "nodes": [
               {
+                "isResolved": false,
                 "comments": {
                   "nodes": [
                     {
@@ -67,7 +68,9 @@
                       "body": "Consider using a constant here.",
                       "createdAt": "2026-03-13T11:00:00Z",
                       "path": "src/auth/middleware.py",
-                      "line": 45
+                      "line": 45,
+                      "originalLine": 45,
+                      "diffHunk": "@@ -43,7 +43,7 @@ class AuthMiddleware:\n-    timeout = 30\n+    timeout = TOKEN_TIMEOUT"
                     }
                   ]
                 }
@@ -85,8 +88,11 @@
           "updatedAt": "2026-03-05T16:00:00Z",
           "mergedAt": "2026-03-05T16:00:00Z",
           "headRefName": "feature/PROJ-500-caching",
+          "baseRefName": "main",
+          "body": "Adds Redis caching for frequently accessed data.",
           "repository": {
-            "nameWithOwner": "acme/backend"
+            "nameWithOwner": "acme/backend",
+            "name": "backend"
           },
           "author": {
             "login": "alice"
@@ -98,9 +104,6 @@
                 "author": { "login": "dave" }
               }
             ]
-          },
-          "reviewRequests": {
-            "nodes": []
           },
           "commits": {
             "nodes": [
@@ -130,21 +133,17 @@
           "updatedAt": "2026-03-14T12:00:00Z",
           "mergedAt": null,
           "headRefName": "experiment/ERSC-1278-parser",
+          "baseRefName": "main",
+          "body": null,
           "repository": {
-            "nameWithOwner": "acme/frontend"
+            "nameWithOwner": "acme/frontend",
+            "name": "frontend"
           },
           "author": {
             "login": "alice"
           },
           "reviews": {
             "nodes": []
-          },
-          "reviewRequests": {
-            "nodes": [
-              {
-                "requestedReviewer": { "login": "bob" }
-              }
-            ]
           },
           "commits": {
             "nodes": [

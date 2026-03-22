@@ -11,7 +11,7 @@ from pathlib import Path
 import click
 
 from duct.cli.output import error, output, spinner, success
-from duct.cli.resolve import complete_ticket_key, resolve_root
+from duct.cli.resolve import complete_ticket_key, resolve_root, resolve_ticket_key, workspace_option
 from duct.config import ConfigError, TrustConfig, load_config
 
 
@@ -167,13 +167,14 @@ def _format_stream_event(line: str) -> str | None:
 
 
 @click.command()
-@click.option("--ticket", "ticket_key", default=None, help="Focus on a specific ticket.", shell_complete=complete_ticket_key)
+@workspace_option()
+@click.option("--ticket", "ticket_key_legacy", default=None, hidden=True, shell_complete=complete_ticket_key)
 @click.option("--dry-run", is_flag=True, help="Print the command without executing.")
 @click.option("--sync", "pre_sync", is_flag=True, help="Run sync before launching orchestrator.")
 @click.option("--skip-permissions", is_flag=True, help="Pass --dangerously-skip-permissions (requires sandbox).")
 @click.option("--verbose", "-v", is_flag=True, help="Stream orchestrator activity to the terminal.")
 @click.pass_context
-def orchestrate(ctx: click.Context, ticket_key: str | None, dry_run: bool, pre_sync: bool, skip_permissions: bool, verbose: bool) -> None:
+def orchestrate(ctx: click.Context, workspace_key: str | None, ticket_key_legacy: str | None, dry_run: bool, pre_sync: bool, skip_permissions: bool, verbose: bool) -> None:
     """Launch an orchestrator Claude Code session."""
     try:
         root = resolve_root(ctx)
@@ -183,6 +184,7 @@ def orchestrate(ctx: click.Context, ticket_key: str | None, dry_run: bool, pre_s
         ctx.exit(1)
         return
 
+    ticket_key = resolve_ticket_key(ctx, workspace_key or ticket_key_legacy)
     use_skip_permissions = skip_permissions or cfg.sandbox.skip_permissions
 
     if use_skip_permissions and not cfg.sandbox.enabled:

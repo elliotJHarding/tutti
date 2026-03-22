@@ -58,6 +58,14 @@ def test_parse_ticket_md_empty():
 # ---------------------------------------------------------------------------
 
 
+def _write_pr_file(tmp_path: Path, number: int, repo: str, ci_status: str) -> None:
+    """Write a per-PR markdown file under orchestrator/prs/."""
+    prs_dir = tmp_path / "orchestrator" / "prs"
+    prs_dir.mkdir(parents=True, exist_ok=True)
+    content = f"# PR #{number}: Fix the thing\n**CI:** {ci_status}\n"
+    (prs_dir / f"PR-{number}-{repo}.md").write_text(content)
+
+
 def test_count_prs_no_file(tmp_path: Path):
     count, ci = _count_prs(tmp_path)
     assert count == 0
@@ -65,14 +73,8 @@ def test_count_prs_no_file(tmp_path: Path):
 
 
 def test_count_prs_with_data(tmp_path: Path):
-    orch = tmp_path / "orchestrator"
-    orch.mkdir()
-    content = (
-        "# Pull Requests\n\n"
-        "## #10 Fix the thing\n**CI**: passing\n\n"
-        "## #11 Another PR\n**CI**: failing\n"
-    )
-    (orch / "PULL_REQUESTS.md").write_text(content)
+    _write_pr_file(tmp_path, 10, "backend", "passing")
+    _write_pr_file(tmp_path, 11, "frontend", "failing")
 
     count, ci = _count_prs(tmp_path)
 
@@ -81,10 +83,8 @@ def test_count_prs_with_data(tmp_path: Path):
 
 
 def test_count_prs_all_passing(tmp_path: Path):
-    orch = tmp_path / "orchestrator"
-    orch.mkdir()
-    content = "## #10 PR one\n**CI**: passing\n\n## #11 PR two\n**CI**: passing\n"
-    (orch / "PULL_REQUESTS.md").write_text(content)
+    _write_pr_file(tmp_path, 10, "backend", "passing")
+    _write_pr_file(tmp_path, 11, "frontend", "passing")
 
     count, ci = _count_prs(tmp_path)
 

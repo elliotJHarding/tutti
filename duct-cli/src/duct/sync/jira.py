@@ -73,8 +73,12 @@ class JiraSync:
             "Accept": "application/json",
         }
 
-    def sync(self, root: Path) -> SyncResult:
-        """Run a full Jira sync cycle."""
+    def sync(self, root: Path, ticket_key: str | None = None) -> SyncResult:
+        """Run a full Jira sync cycle.
+
+        If *ticket_key* is provided, only process that ticket (archive
+        detection is skipped to avoid archiving other tickets).
+        """
         start = time.time()
         errors: list[str] = []
 
@@ -90,6 +94,10 @@ class JiraSync:
                 duration_seconds=time.time() - start,
                 errors=[str(exc)],
             )
+
+        # Filter to a single ticket when scoped.
+        if ticket_key:
+            issues = [i for i in issues if i["key"] == ticket_key]
 
         # First pass: build epic map (ticket_key -> epic_key).
         epic_map: dict[str, str] = {}
@@ -156,7 +164,8 @@ class JiraSync:
                 errors.append(f"{key}: failed to write ticket - {exc}")
 
         # Archive tickets that disappeared from query results.
-        stale_keys = previous_keys - current_keys
+        # Skip when scoped to a single ticket — we'd falsely archive everything else.
+        stale_keys = set() if ticket_key else (previous_keys - current_keys)
         for key in stale_keys:
             try:
                 archive_ticket(root, key)

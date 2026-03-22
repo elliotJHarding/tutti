@@ -495,3 +495,273 @@ def test_add_repo_branch_override(tmp_path: Path) -> None:
 
     assert result.exit_code == 0, result.output
     assert "custom-branch-name" in result.output
+
+
+# ---------------------------------------------------------------------------
+# workspace new tests
+# ---------------------------------------------------------------------------
+
+
+def test_workspace_new_creates_dir(tmp_path: Path) -> None:
+    """workspace new KEY should create a ticket directory when Jira is not configured."""
+    runner = CliRunner()
+    _init_workspace(runner, tmp_path)
+
+    result = runner.invoke(
+        cli, ["--workspace-root", str(tmp_path), "workspace", "new", "PROJ-42"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "PROJ-42" in result.output
+    # Directory should exist under root
+    dirs = [d.name for d in tmp_path.iterdir() if d.is_dir()]
+    assert any("PROJ-42" in d for d in dirs)
+
+
+def test_workspace_new_upcases_key(tmp_path: Path) -> None:
+    """workspace new should uppercase the ticket key."""
+    runner = CliRunner()
+    _init_workspace(runner, tmp_path)
+
+    result = runner.invoke(
+        cli, ["--workspace-root", str(tmp_path), "workspace", "new", "proj-10"]
+    )
+
+    assert result.exit_code == 0, result.output
+    dirs = [d.name for d in tmp_path.iterdir() if d.is_dir()]
+    assert any("PROJ-10" in d for d in dirs)
+
+
+def test_workspace_new_with_jira_success(tmp_path: Path) -> None:
+    """workspace new should use JiraSync when Jira is configured."""
+    import yaml
+    from unittest.mock import MagicMock, patch
+    from duct.models import SyncResult
+
+    runner = CliRunner()
+    _init_workspace(runner, tmp_path)
+
+    # Configure Jira domain
+    config_path = tmp_path / "config.yaml"
+    cfg_data = yaml.safe_load(config_path.read_text()) if config_path.exists() else {}
+    cfg_data["jira"] = {"domain": "test.atlassian.net"}
+    config_path.write_text(yaml.dump(cfg_data))
+
+    def fake_sync(root, ticket_key=None):
+        # Create the ticket dir as JiraSync would
+        _create_ticket_dir(root, "PROJ-99", "my-ticket")
+        return SyncResult(source="jira", tickets_synced=1, duration_seconds=0.1)
+
+    with patch("duct.config.jira_email", return_value="user@example.com"), \
+         patch("duct.config.jira_token", return_value="tok123"), \
+         patch("duct.sync.jira.JiraSync.sync", fake_sync):
+        result = runner.invoke(
+            cli, ["--workspace-root", str(tmp_path), "workspace", "new", "PROJ-99"]
+        )
+
+    assert result.exit_code == 0, result.output
+    assert "PROJ-99" in result.output
+
+
+# ---------------------------------------------------------------------------
+# workspace list tests
+# ---------------------------------------------------------------------------
+
+
+def _write_ticket_md(ticket_dir: Path, key: str, summary: str, status: str, category: str) -> None:
+    orch = ticket_dir / "orchestrator"
+    orch.mkdir(parents=True, exist_ok=True)
+    (orch / "TICKET.md").write_text(
+        f"# {key}: {summary}\n\n"
+        f"| Field | Value |\n"
+        f"|---|---|\n"
+        f"| Status | {status} |\n"
+        f"| Category | {category} |\n"
+    )
+
+
+def test_workspace_list_empty(tmp_path: Path) -> None:
+    """workspace list with no ticket dirs reports nothing found."""
+    runner = CliRunner()
+    _init_workspace(runner, tmp_path)
+
+    result = runner.invoke(cli, ["--workspace-root", str(tmp_path), "workspace", "list"])
+
+    assert result.exit_code == 0, result.output
+    assert "No ticket workspaces found" in result.output
+
+
+def test_workspace_list_shows_keys(tmp_path: Path) -> None:
+    """workspace list shows all ticket keys."""
+    runner = CliRunner()
+    _init_workspace(runner, tmp_path)
+
+    _create_ticket_dir(tmp_path, "PROJ-10")
+    _create_ticket_dir(tmp_path, "PROJ-20")
+
+    result = runner.invoke(cli, ["--workspace-root", str(tmp_path), "workspace", "list"])
+
+    assert result.exit_code == 0, result.output
+    assert "PROJ-10" in result.output
+    assert "PROJ-20" in result.output
+
+
+def test_workspace_list_with_ticket_md(tmp_path: Path) -> None:
+    """workspace list shows summary and status from TICKET.md."""
+    runner = CliRunner()
+    _init_workspace(runner, tmp_path)
+
+    ticket_dir = _create_ticket_dir(tmp_path, "PROJ-30", "my-feature")
+    _write_ticket_md(ticket_dir, "PROJ-30", "My Feature", "In Progress", "Active Development")
+
+    result = runner.invoke(cli, ["--workspace-root", str(tmp_path), "workspace", "list"])
+
+    assert result.exit_code == 0, result.output
+    assert "PROJ-30" in result.output
+    assert "My Feature" in result.output
+    assert "In Progress" in result.output
+
+
+def test_workspace_list_filter_category(tmp_path: Path) -> None:
+    """workspace list --category filters to matching tickets only."""
+    runner = CliRunner()
+    _init_workspace(runner, tmp_path)
+
+    t1 = _create_ticket_dir(tmp_path, "PROJ-10", "feature-a")
+    t2 = _create_ticket_dir(tmp_path, "PROJ-20", "feature-b")
+    _write_ticket_md(t1, "PROJ-10", "Feature A", "In Progress", "Active Development")
+    _write_ticket_md(t2, "PROJ-20", "Feature B", "Done", "Released")
+
+    result = runner.invoke(
+        cli,
+        ["--workspace-root", str(tmp_path), "workspace", "list", "--category", "Active Development"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "PROJ-10" in result.output
+    assert "PROJ-20" not in result.output
+
+
+def test_workspace_list_filter_status(tmp_path: Path) -> None:
+    """workspace list --status filters to matching tickets only."""
+    runner = CliRunner()
+    _init_workspace(runner, tmp_path)
+
+    t1 = _create_ticket_dir(tmp_path, "PROJ-10", "open-ticket")
+    t2 = _create_ticket_dir(tmp_path, "PROJ-20", "done-ticket")
+    _write_ticket_md(t1, "PROJ-10", "Open Ticket", "In Progress", "Active")
+    _write_ticket_md(t2, "PROJ-20", "Done Ticket", "Done", "Released")
+
+    result = runner.invoke(
+        cli,
+        ["--workspace-root", str(tmp_path), "workspace", "list", "--status", "Done"],
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "PROJ-20" in result.output
+    assert "PROJ-10" not in result.output
+
+
+def test_workspace_list_sort_key(tmp_path: Path) -> None:
+    """workspace list --sort key returns keys in alphabetical order."""
+    runner = CliRunner()
+    _init_workspace(runner, tmp_path)
+
+    _create_ticket_dir(tmp_path, "PROJ-30")
+    _create_ticket_dir(tmp_path, "PROJ-10")
+    _create_ticket_dir(tmp_path, "PROJ-20")
+
+    result = runner.invoke(
+        cli,
+        ["--workspace-root", str(tmp_path), "workspace", "list", "--sort", "key"],
+    )
+
+    assert result.exit_code == 0, result.output
+    pos_10 = result.output.index("PROJ-10")
+    pos_20 = result.output.index("PROJ-20")
+    pos_30 = result.output.index("PROJ-30")
+    assert pos_10 < pos_20 < pos_30
+
+
+# ---------------------------------------------------------------------------
+# workspace archive tests
+# ---------------------------------------------------------------------------
+
+
+def test_workspace_archive_existing(tmp_path: Path) -> None:
+    """workspace archive KEY moves the ticket to .archive/."""
+    runner = CliRunner()
+    _init_workspace(runner, tmp_path)
+
+    ticket_dir = tmp_path / "PROJ-10-some-task"
+    (ticket_dir / "orchestrator").mkdir(parents=True)
+
+    result = runner.invoke(
+        cli, ["--workspace-root", str(tmp_path), "workspace", "archive", "PROJ-10"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Archived" in result.output
+    assert (tmp_path / ".archive" / "PROJ-10-some-task").is_dir()
+    assert not ticket_dir.exists()
+
+
+def test_workspace_archive_missing(tmp_path: Path) -> None:
+    """workspace archive with a key that doesn't exist should error."""
+    runner = CliRunner()
+    _init_workspace(runner, tmp_path)
+
+    result = runner.invoke(
+        cli, ["--workspace-root", str(tmp_path), "workspace", "archive", "NOPE-1"]
+    )
+
+    assert result.exit_code != 0
+    assert "not found" in result.output.lower()
+
+
+def test_workspace_archive_no_key(tmp_path: Path) -> None:
+    """workspace archive with no key and no CWD match should error."""
+    runner = CliRunner()
+    _init_workspace(runner, tmp_path)
+
+    result = runner.invoke(
+        cli, ["--workspace-root", str(tmp_path), "workspace", "archive"]
+    )
+
+    assert result.exit_code != 0
+
+
+# ---------------------------------------------------------------------------
+# workspace restore tests
+# ---------------------------------------------------------------------------
+
+
+def test_workspace_restore_existing(tmp_path: Path) -> None:
+    """workspace restore KEY moves the ticket from .archive/ back to root."""
+    runner = CliRunner()
+    _init_workspace(runner, tmp_path)
+
+    archive_dir = tmp_path / ".archive" / "PROJ-10-old-task"
+    (archive_dir / "orchestrator").mkdir(parents=True)
+
+    result = runner.invoke(
+        cli, ["--workspace-root", str(tmp_path), "workspace", "restore", "PROJ-10"]
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "Restored" in result.output
+    assert (tmp_path / "PROJ-10-old-task").is_dir()
+    assert not archive_dir.exists()
+
+
+def test_workspace_restore_missing(tmp_path: Path) -> None:
+    """workspace restore with a key not in archive should error."""
+    runner = CliRunner()
+    _init_workspace(runner, tmp_path)
+
+    result = runner.invoke(
+        cli, ["--workspace-root", str(tmp_path), "workspace", "restore", "NOPE-1"]
+    )
+
+    assert result.exit_code != 0
+    assert "not found" in result.output.lower()

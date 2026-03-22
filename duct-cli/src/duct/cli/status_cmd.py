@@ -9,7 +9,7 @@ from pathlib import Path
 import click
 
 from duct.cli.output import Col, error, output, section, table
-from duct.cli.resolve import resolve_root
+from duct.cli.resolve import resolve_root, resolve_ticket_key, workspace_option
 from duct.config import ConfigError
 from duct.markdown import extract_table, parse_frontmatter
 from duct.workspace import enumerate_ticket_dirs
@@ -171,8 +171,9 @@ _FOCUS_STATUSES = {"in progress", "analysis started"}
 @click.command()
 @click.option("--all", "show_all", is_flag=True, help="Show all tickets except Closed/Done.")
 @click.option("--closed", "show_closed", is_flag=True, help="Include Closed and Done tickets.")
+@workspace_option()
 @click.pass_context
-def status(ctx: click.Context, show_all: bool, show_closed: bool) -> None:
+def status(ctx: click.Context, show_all: bool, show_closed: bool, workspace_key: str | None) -> None:
     """Show a unified dashboard of all tracked work.
 
     Default: focused view (In Progress and Analysis Started only).
@@ -184,7 +185,10 @@ def status(ctx: click.Context, show_all: bool, show_closed: bool) -> None:
         ctx.exit(1)
         return
 
+    key_filter = resolve_ticket_key(ctx, workspace_key)
     tickets = enumerate_ticket_dirs(root)
+    if key_filter:
+        tickets = [(k, p) for k, p in tickets if k == key_filter]
     if not tickets:
         output("No tracked tickets. Run 'duct sync --force' to get started.")
         return

@@ -23,8 +23,11 @@ class SyncSource(Protocol):
         """Unique identifier for this source (e.g. 'jira', 'github')."""
         ...
 
-    def sync(self, root: Path) -> SyncResult:
-        """Run a sync cycle, writing snapshot files under root."""
+    def sync(self, root: Path, ticket_key: str | None = None) -> SyncResult:
+        """Run a sync cycle, writing snapshot files under root.
+
+        If *ticket_key* is provided, only process that ticket.
+        """
         ...
 
 
@@ -105,6 +108,7 @@ class SyncCoordinator:
         self,
         sources: list[SyncSource],
         force: bool = False,
+        ticket_key: str | None = None,
         on_result: Callable[[SyncResult], None] | None = None,
         on_start: Callable[[str], None] | None = None,
     ) -> list[SyncResult]:
@@ -115,7 +119,7 @@ class SyncCoordinator:
                 continue
             if on_start:
                 on_start(source.name)
-            result = source.sync(self._root)
+            result = source.sync(self._root, ticket_key=ticket_key)
             results.append(result)
             if not result.errors:
                 state[source.name] = time.time()

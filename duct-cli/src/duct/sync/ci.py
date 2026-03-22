@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,26 +15,36 @@ from duct.workspace import enumerate_ticket_dirs, orchestrator_dir
 class CISync:
     """Stub sync source for CI/build status.
 
-    Currently extracts CI information from PULL_REQUESTS.md if it exists.
+    Extracts CI information from per-PR markdown files in orchestrator/prs/.
     Future: direct GitHub Actions API integration.
     """
 
     name = "ci"
 
-    def sync(self, root: Path) -> SyncResult:
+    def sync(self, root: Path, ticket_key: str | None = None) -> SyncResult:
         start = time.time()
         errors: list[str] = []
         synced = 0
 
         for key, ticket_dir in enumerate_ticket_dirs(root):
+            if ticket_key and key != ticket_key:
+                continue
             orch = orchestrator_dir(ticket_dir)
-            pr_md = orch / "PULL_REQUESTS.md"
+            prs_dir = orch / "prs"
 
-            if not pr_md.exists():
+            if not prs_dir.is_dir():
+                continue
+
+            pr_files = sorted(prs_dir.glob("PR-*.md"))
+            if not pr_files:
                 continue
 
             try:
-                ci_info = self._extract_ci_from_prs(pr_md)
+                ci_info = []
+                for pr_file in pr_files:
+                    entry = self._extract_ci_from_pr_file(pr_file)
+                    if entry:
+                        ci_info.append(entry)
                 if ci_info:
                     self._write_ci_md(ci_info, ticket_dir)
                     synced += 1
@@ -47,22 +58,24 @@ class CISync:
             errors=errors,
         )
 
-    def _extract_ci_from_prs(self, pr_md: Path) -> list[dict]:
-        """Extract CI status lines from PULL_REQUESTS.md."""
-        content = pr_md.read_text()
+    def _extract_ci_from_pr_file(self, pr_file: Path) -> dict | None:
+        """Extract PR title and CI status from a single PR markdown file."""
+        content = pr_file.read_text()
         _, body = parse_frontmatter(content)
 
-        ci_entries: list[dict] = []
-        current_pr = ""
-
+        pr_title = ""
+        ci_status = ""
         for line in body.splitlines():
-            if line.startswith("## #"):
-                current_pr = line.lstrip("# ").strip()
-            elif line.startswith("- **CI**:"):
-                status = line.split(":", 1)[1].strip()
-                ci_entries.append({"pr": current_pr, "status": status})
+            m = re.match(r"^# PR #(\d+): (.+)$", line)
+            if m:
+                pr_title = f"#{m.group(1)} {m.group(2)}"
+            m2 = re.match(r"^\*\*CI:\*\* (.+)$", line)
+            if m2:
+                ci_status = m2.group(1).strip()
 
-        return ci_entries
+        if not ci_status:
+            return None
+        return {"pr": pr_title, "status": ci_status}
 
     def _write_ci_md(self, ci_entries: list[dict], ticket_dir: Path) -> None:
         now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")

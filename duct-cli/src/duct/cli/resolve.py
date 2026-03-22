@@ -18,6 +18,52 @@ def resolve_root(ctx: click.Context) -> Path:
     return find_workspace_root()
 
 
+def detect_current_ticket(root: Path) -> str | None:
+    """Return ticket key if cwd is inside a ticket directory under root."""
+    from duct.workspace import _is_ticket_dir, _key_from_dirname
+
+    cwd = Path.cwd().resolve()
+    try:
+        rel = cwd.relative_to(root.resolve())
+    except ValueError:
+        return None
+    parts = rel.parts
+    if not parts:
+        return None
+    candidate = root / parts[0]
+    key = _key_from_dirname(parts[0])
+    if key and _is_ticket_dir(candidate):
+        return key
+    return None
+
+
+def workspace_option():
+    """Reusable --workspace / -w / --ws Click option decorator."""
+    return click.option(
+        "--workspace", "-w", "--ws",
+        "workspace_key",
+        metavar="KEY",
+        default=None,
+        shell_complete=complete_ticket_key,
+        help="Target a specific ticket workspace.",
+    )
+
+
+def resolve_ticket_key(ctx: click.Context, explicit_key: str | None) -> str | None:
+    """Resolve ticket key: explicit arg > CWD detection > None.
+
+    None means 'no specific ticket' — caller decides whether to operate on
+    all workspaces or raise an error.
+    """
+    if explicit_key:
+        return explicit_key.upper()
+    try:
+        root = resolve_root(ctx)
+    except Exception:
+        return None
+    return detect_current_ticket(root)
+
+
 def complete_ticket_key(
     ctx: click.Context, param: click.Parameter, incomplete: str
 ) -> list[CompletionItem]:

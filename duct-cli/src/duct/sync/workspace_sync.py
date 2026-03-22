@@ -15,12 +15,14 @@ from duct.workspace import enumerate_ticket_dirs, orchestrator_dir
 class WorkspaceSync:
     name = "workspace"
 
-    def sync(self, root: Path) -> SyncResult:
+    def sync(self, root: Path, ticket_key: str | None = None) -> SyncResult:
         start = time.time()
         errors: list[str] = []
         synced = 0
 
         for key, ticket_dir in enumerate_ticket_dirs(root):
+            if ticket_key and key != ticket_key:
+                continue
             repos = self._find_repos(ticket_dir)
             if not repos:
                 continue

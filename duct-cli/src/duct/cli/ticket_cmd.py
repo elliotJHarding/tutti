@@ -8,7 +8,7 @@ from pathlib import Path
 import click
 
 from duct.cli.output import Col, error, kv, output, section, table
-from duct.cli.resolve import complete_ticket_key, resolve_root
+from duct.cli.resolve import complete_ticket_key, resolve_root, resolve_ticket_key, workspace_option
 from duct.config import ConfigError, load_config
 from duct.markdown import extract_table, parse_frontmatter
 from duct.workspace import enumerate_ticket_dirs, resolve_ticket_dir
@@ -63,12 +63,14 @@ def ticket(ctx: click.Context) -> None:
     type=click.Choice(["key", "status", "category"]),
     help="Sort results.",
 )
+@workspace_option()
 @click.pass_context
 def ticket_list(
     ctx: click.Context,
     category: str | None,
     status_filter: str | None,
     sort_by: str | None,
+    workspace_key: str | None,
 ) -> None:
     """List all tracked tickets."""
     try:
@@ -78,7 +80,10 @@ def ticket_list(
         ctx.exit(1)
         return
 
+    key_filter = resolve_ticket_key(ctx, workspace_key)
     tickets = enumerate_ticket_dirs(root)
+    if key_filter:
+        tickets = [(k, p) for k, p in tickets if k == key_filter]
     if not tickets:
         output("No tracked tickets.", data=[])
         return
@@ -133,14 +138,21 @@ def ticket_list(
 
 
 @ticket.command("open")
-@click.argument("key", shell_complete=complete_ticket_key)
+@click.argument("key", required=False, default=None, shell_complete=complete_ticket_key)
+@workspace_option()
 @click.pass_context
-def ticket_open(ctx: click.Context, key: str) -> None:
+def ticket_open(ctx: click.Context, key: str | None, workspace_key: str | None) -> None:
     """Open a ticket's Jira page in the browser."""
     try:
         root = resolve_root(ctx)
     except ConfigError as exc:
         error(str(exc))
+        ctx.exit(1)
+        return
+
+    resolved = resolve_ticket_key(ctx, key or workspace_key)
+    if not resolved:
+        error("No workspace specified. Provide a ticket key, use --workspace, or run from a workspace directory.")
         ctx.exit(1)
         return
 
@@ -150,12 +162,13 @@ def ticket_open(ctx: click.Context, key: str) -> None:
         ctx.exit(1)
         return
 
-    ticket_dir = resolve_ticket_dir(root, key)
+    ticket_dir = resolve_ticket_dir(root, resolved)
     if ticket_dir is None:
-        error(f"Ticket {key} not found.")
+        error(f"Ticket {resolved} not found.")
         ctx.exit(1)
         return
 
+    key = resolved
     url = f"https://{config.jira_domain}/browse/{key}"
 
     if ctx.obj and ctx.obj.get("json"):
@@ -166,14 +179,21 @@ def ticket_open(ctx: click.Context, key: str) -> None:
 
 
 @ticket.command("show")
-@click.argument("key", shell_complete=complete_ticket_key)
+@click.argument("key", required=False, default=None, shell_complete=complete_ticket_key)
+@workspace_option()
 @click.pass_context
-def ticket_show(ctx: click.Context, key: str) -> None:
+def ticket_show(ctx: click.Context, key: str | None, workspace_key: str | None) -> None:
     """Show ticket details and artifact inventory."""
     try:
         root = resolve_root(ctx)
     except ConfigError as exc:
         error(str(exc))
+        ctx.exit(1)
+        return
+
+    key = resolve_ticket_key(ctx, key or workspace_key)
+    if not key:
+        error("No workspace specified. Provide a ticket key, use --workspace, or run from a workspace directory.")
         ctx.exit(1)
         return
 

@@ -11,6 +11,7 @@ COMMANDS = {
     "doctor": "duct.cli.doctor_cmd:doctor",
     "init": "duct.cli.init_cmd:init",
     "orchestrate": "duct.cli.orchestrate_cmd:orchestrate",
+    "repo": "duct.cli.repo_cmd:repo",
     "session": "duct.cli.session_cmd:session",
     "status": "duct.cli.status_cmd:status",
     "sync": "duct.cli.sync_cmd:sync",

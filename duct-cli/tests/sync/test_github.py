@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from duct.exceptions import AuthError, SyncError
-from duct.models import PRComment, PullRequest, Reviewer
+from duct.models import PRComment, PullRequest, ReviewThread, Reviewer
 from duct.sync.github import _GRAPHQL_URL, GitHubSync
 
 # ---------------------------------------------------------------------------
@@ -83,6 +83,8 @@ class TestParsePrNode:
         assert pr.created_at == "2026-03-10T10:00:00Z"
         assert pr.updated_at == "2026-03-15T14:30:00Z"
         assert pr.branch == "feature/ERSC-1278-fix-auth"
+        assert pr.base_branch == "main"
+        assert pr.body == "Fixes the authentication token expiry bug."
         assert pr.ci_status == "passing"
         assert pr.review_status == "APPROVED"
 
@@ -112,23 +114,30 @@ class TestParsePrNode:
         # Last review state wins
         assert pr.reviewers[0].state == "APPROVED"
 
-    def test_comments_extracted(self, gh: GitHubSync, graphql_response: dict):
+    def test_general_comments_extracted(self, gh: GitHubSync, graphql_response: dict):
         node = graphql_response["data"]["search"]["nodes"][0]
         pr = gh._parse_pr_node(node)
 
-        # 1 regular comment + 1 review thread comment
-        assert len(pr.comments) == 2
+        # Only PR-level comments (not review thread comments)
+        assert len(pr.comments) == 1
+        assert pr.comments[0].author == "charlie"
+        assert "Looks good" in pr.comments[0].body
+        assert pr.comments[0].path is None
 
-        regular = [c for c in pr.comments if c.path is None]
-        assert len(regular) == 1
-        assert regular[0].author == "charlie"
-        assert "Looks good" in regular[0].body
+    def test_review_threads_extracted(self, gh: GitHubSync, graphql_response: dict):
+        node = graphql_response["data"]["search"]["nodes"][0]
+        pr = gh._parse_pr_node(node)
 
-        review = [c for c in pr.comments if c.path is not None]
-        assert len(review) == 1
-        assert review[0].path == "src/auth/middleware.py"
-        assert review[0].line == 45
-        assert review[0].author == "bob"
+        assert len(pr.review_threads) == 1
+        thread = pr.review_threads[0]
+        assert thread.is_resolved is False
+        assert len(thread.comments) == 1
+        c = thread.comments[0]
+        assert c.author == "bob"
+        assert c.path == "src/auth/middleware.py"
+        assert c.line == 45
+        assert c.diff_hunk is not None
+        assert "timeout" in c.diff_hunk
 
 
 # ---------------------------------------------------------------------------
@@ -148,12 +157,25 @@ class TestDeriveReviewStatus:
         reviews = [{"state": "CHANGES_REQUESTED", "author": {"login": "bob"}}]
         assert gh._derive_review_status(reviews) == "CHANGES_REQUESTED"
 
-    def test_most_recent_wins(self, gh: GitHubSync):
+    def test_last_state_per_reviewer_wins(self, gh: GitHubSync):
+        # bob went from CHANGES_REQUESTED → APPROVED; last state wins
         reviews = [
             {"state": "CHANGES_REQUESTED", "author": {"login": "bob"}},
             {"state": "APPROVED", "author": {"login": "bob"}},
         ]
         assert gh._derive_review_status(reviews) == "APPROVED"
+
+    def test_changes_requested_wins_across_reviewers(self, gh: GitHubSync):
+        # One reviewer approved, another requested changes
+        reviews = [
+            {"state": "APPROVED", "author": {"login": "alice"}},
+            {"state": "CHANGES_REQUESTED", "author": {"login": "bob"}},
+        ]
+        assert gh._derive_review_status(reviews) == "CHANGES_REQUESTED"
+
+    def test_dismissed_ignored(self, gh: GitHubSync):
+        reviews = [{"state": "DISMISSED", "author": {"login": "bob"}}]
+        assert gh._derive_review_status(reviews) == "pending"
 
     def test_commented_only_is_pending(self, gh: GitHubSync):
         reviews = [{"state": "COMMENTED", "author": {"login": "bob"}}]
@@ -220,118 +242,150 @@ class TestMatchTicketKeys:
 
 
 # ---------------------------------------------------------------------------
-# _write_pull_requests_md
+# _write_pr_files / _render_pr_md
 # ---------------------------------------------------------------------------
 
 
-class TestWritePullRequestsMd:
-    def test_format(self, gh: GitHubSync, tmp_path: Path):
+def _make_pr(
+    number: int = 42,
+    title: str = "ERSC-1278: Fix auth",
+    repo: str = "acme/backend",
+    **kwargs,
+) -> PullRequest:
+    defaults = dict(
+        state="open", author="alice", is_draft=False,
+        review_status="APPROVED", ci_status="passing",
+        url=f"https://github.com/{repo}/pull/{number}",
+        created_at="2026-03-10T10:00:00Z",
+        updated_at="2026-03-15T14:30:00Z",
+        branch="feature/ERSC-1278-fix-auth",
+        base_branch="main",
+        body="Fixes the auth bug.",
+    )
+    defaults.update(kwargs)
+    return PullRequest(number=number, title=title, repo=repo, **defaults)
+
+
+class TestWritePrFiles:
+    def test_creates_file_per_pr(self, gh: GitHubSync, tmp_path: Path):
         ticket_dir = tmp_path / "ERSC-1278-fix-auth"
         ticket_dir.mkdir()
         (ticket_dir / "orchestrator").mkdir()
 
-        prs = [
-            PullRequest(
-                number=42,
-                title="ERSC-1278: Fix authentication middleware",
-                repo="acme/backend",
-                state="open",
-                author="alice",
-                is_draft=False,
-                review_status="APPROVED",
-                ci_status="passing",
-                url="https://github.com/acme/backend/pull/42",
-                created_at="2026-03-10T10:00:00Z",
-                updated_at="2026-03-15T14:30:00Z",
-                branch="feature/ERSC-1278-fix-auth",
-                reviewers=[Reviewer(login="bob", state="APPROVED")],
-                comments=[
-                    PRComment(
+        prs = [_make_pr(42, repo="acme/backend"), _make_pr(7, repo="acme/frontend")]
+        gh._write_pr_files(prs, ticket_dir)
+
+        prs_dir = ticket_dir / "orchestrator" / "prs"
+        assert prs_dir.is_dir()
+        assert (prs_dir / "PR-42-backend.md").exists()
+        assert (prs_dir / "PR-7-frontend.md").exists()
+
+    def test_render_pr_md_format(self, gh: GitHubSync, tmp_path: Path):
+        ticket_dir = tmp_path / "ERSC-1278-fix-auth"
+        ticket_dir.mkdir()
+        (ticket_dir / "orchestrator").mkdir()
+
+        pr = _make_pr(
+            42,
+            reviewers=[Reviewer(login="bob", state="APPROVED")],
+            review_threads=[
+                ReviewThread(
+                    is_resolved=False,
+                    comments=[PRComment(
                         author="bob",
                         created_at="2026-03-13T11:00:00Z",
                         body="Consider using a constant here.",
                         path="src/auth/middleware.py",
                         line=45,
-                    ),
-                ],
-            ),
-        ]
+                        diff_hunk="@@ -43 +43 @@\n-    timeout = 30\n+    timeout = TOKEN_TIMEOUT",
+                    )],
+                )
+            ],
+            comments=[PRComment(
+                author="charlie",
+                created_at="2026-03-12T09:00:00Z",
+                body="Looks good overall.",
+            )],
+        )
+        gh._write_pr_files([pr], ticket_dir)
 
-        gh._write_pull_requests_md(prs, ticket_dir)
-
-        md_path = ticket_dir / "orchestrator" / "PULL_REQUESTS.md"
-        assert md_path.exists()
-        content = md_path.read_text()
+        content = (ticket_dir / "orchestrator" / "prs" / "PR-42-backend.md").read_text()
 
         # Frontmatter
         assert content.startswith("---\n")
         assert "source: sync" in content
-        assert "syncedAt:" in content
 
-        # PR heading
-        assert "## #42 - ERSC-1278: Fix authentication middleware" in content
+        # Title and metadata
+        assert "# PR #42: ERSC-1278: Fix auth" in content
+        assert "**Branch:** feature/ERSC-1278-fix-auth → main" in content
+        assert "**CI:** passing" in content
+        assert "**Author:** @alice" in content
+        assert "https://github.com/acme/backend/pull/42" in content
 
-        # Metadata
-        assert "- **Repo**: acme/backend" in content
-        assert "- **State**: open" in content
-        assert "- **Author**: @alice" in content
-        assert "- **Review**: APPROVED" in content
-        assert "- **CI**: passing" in content
-        assert "[View on GitHub](https://github.com/acme/backend/pull/42)" in content
+        # Description
+        assert "## Description" in content
+        assert "Fixes the auth bug." in content
 
         # Reviewers
-        assert "### Reviewers" in content
-        assert "- @bob: APPROVED" in content
+        assert "## Reviewers" in content
+        assert "@bob: APPROVED" in content
 
-        # Review comments
-        assert "### Outstanding Comments" in content
+        # Outstanding review comments
+        assert "## Outstanding Review Comments" in content
         assert "`src/auth/middleware.py:45`" in content
         assert "Consider using a constant here." in content
+        assert "TOKEN_TIMEOUT" in content  # diff hunk content
+
+        # General comments
+        assert "## General Comments" in content
+        assert "Looks good overall." in content
 
     def test_draft_indicator(self, gh: GitHubSync, tmp_path: Path):
         ticket_dir = tmp_path / "ERSC-100-task"
         ticket_dir.mkdir()
         (ticket_dir / "orchestrator").mkdir()
 
-        prs = [
-            PullRequest(
-                number=7, title="WIP experiment", repo="acme/frontend",
-                state="open", author="alice", is_draft=True,
-                review_status="pending", ci_status="unknown",
-                url="https://github.com/acme/frontend/pull/7",
-                created_at="2026-03-14T12:00:00Z",
-                updated_at="2026-03-14T12:00:00Z",
-                branch="experiment/ERSC-100-parser",
-            ),
-        ]
+        pr = _make_pr(7, repo="acme/frontend", is_draft=True, title="WIP experiment")
+        gh._write_pr_files([pr], ticket_dir)
 
-        gh._write_pull_requests_md(prs, ticket_dir)
-        content = (ticket_dir / "orchestrator" / "PULL_REQUESTS.md").read_text()
+        content = (ticket_dir / "orchestrator" / "prs" / "PR-7-frontend.md").read_text()
+        assert "[Draft]" in content
 
-        assert "(DRAFT)" in content
-
-    def test_no_reviewers_or_comments(self, gh: GitHubSync, tmp_path: Path):
+    def test_no_description_fallback(self, gh: GitHubSync, tmp_path: Path):
         ticket_dir = tmp_path / "ERSC-100-task"
         ticket_dir.mkdir()
         (ticket_dir / "orchestrator").mkdir()
 
-        prs = [
-            PullRequest(
-                number=1, title="Simple fix", repo="acme/backend",
-                state="open", author="alice", is_draft=False,
-                review_status="pending", ci_status="unknown",
-                url="https://github.com/acme/backend/pull/1",
-                created_at="2026-03-14T12:00:00Z",
-                updated_at="2026-03-14T12:00:00Z",
-                branch="fix/ERSC-100",
-            ),
-        ]
+        pr = _make_pr(1, repo="acme/backend", body="")
+        gh._write_pr_files([pr], ticket_dir)
 
-        gh._write_pull_requests_md(prs, ticket_dir)
-        content = (ticket_dir / "orchestrator" / "PULL_REQUESTS.md").read_text()
+        content = (ticket_dir / "orchestrator" / "prs" / "PR-1-backend.md").read_text()
+        assert "_No description._" in content
 
-        assert "### Reviewers" not in content
-        assert "### Outstanding Comments" not in content
+    def test_resolved_threads_hidden(self, gh: GitHubSync, tmp_path: Path):
+        ticket_dir = tmp_path / "ERSC-100-task"
+        ticket_dir.mkdir()
+        (ticket_dir / "orchestrator").mkdir()
+
+        pr = _make_pr(
+            1, repo="acme/backend",
+            review_threads=[
+                ReviewThread(is_resolved=True, comments=[
+                    PRComment(author="bob", created_at="2026-03-10T00:00:00Z",
+                              body="Old comment.", path="file.py", line=1),
+                ]),
+                ReviewThread(is_resolved=False, comments=[
+                    PRComment(author="alice", created_at="2026-03-11T00:00:00Z",
+                              body="Still open.", path="file.py", line=2),
+                ]),
+            ],
+        )
+        gh._write_pr_files([pr], ticket_dir)
+
+        content = (ticket_dir / "orchestrator" / "prs" / "PR-1-backend.md").read_text()
+        assert "Still open." in content
+        assert "Old comment." not in content
+        assert "1 resolved thread" in content
 
 
 # ---------------------------------------------------------------------------
@@ -472,7 +526,7 @@ class TestGraphqlSearch:
 
 
 class TestFullSync:
-    def test_sync_writes_pull_requests_md(
+    def test_sync_writes_pr_files(
         self, gh: GitHubSync, httpx_mock, graphql_response: dict, tmp_workspace: Path,
     ):
         # Create ticket directory that matches PR #42 (ERSC-1278 in title and branch)
@@ -488,12 +542,12 @@ class TestFullSync:
         assert result.errors == []
         assert result.duration_seconds > 0
 
-        md_path = tmp_workspace / "ERSC-1278-fix-auth" / "orchestrator" / "PULL_REQUESTS.md"
-        assert md_path.exists()
-        content = md_path.read_text()
-        assert "## #42" in content
-        # PR #7 also matches ERSC-1278 via branch name
-        assert "## #7" in content
+        prs_dir = tmp_workspace / "ERSC-1278-fix-auth" / "orchestrator" / "prs"
+        assert prs_dir.is_dir()
+        # PR #42 is in acme/backend → PR-42-backend.md
+        assert (prs_dir / "PR-42-backend.md").exists()
+        # PR #7 also matches ERSC-1278 via branch name (acme/frontend → PR-7-frontend.md)
+        assert (prs_dir / "PR-7-frontend.md").exists()
 
     def test_sync_no_ticket_dirs(self, gh: GitHubSync, tmp_workspace: Path):
         result = gh.sync(tmp_workspace)
@@ -542,9 +596,6 @@ class TestFullSync:
         result = gh.sync(tmp_workspace)
         assert result.tickets_synced == 1
 
-        content = (
-            tmp_workspace / "ERSC-1278-fix-auth" / "orchestrator" / "PULL_REQUESTS.md"
-        ).read_text()
-
-        # PR #42 should appear only once despite being returned by all 3 queries
-        assert content.count("## #42") == 1
+        prs_dir = tmp_workspace / "ERSC-1278-fix-auth" / "orchestrator" / "prs"
+        # Only one file per PR number+repo, despite duplicate results across queries
+        assert len(list(prs_dir.glob("PR-42-*.md"))) == 1

@@ -15,7 +15,7 @@ import click
 from click.shell_completion import CompletionItem
 
 from duct.cli.output import Col, error, kv, output, section, success, table
-from duct.cli.resolve import complete_ticket_key, resolve_root
+from duct.cli.resolve import complete_ticket_key, resolve_root, resolve_ticket_key, workspace_option
 from duct.config import ConfigError, load_config
 from duct.markdown import TICKET_KEY_PATTERN
 from duct.workspace import enumerate_ticket_dirs, resolve_ticket_dir
@@ -304,8 +304,9 @@ def session(ctx: click.Context) -> None:
 
 @session.command("list")
 @click.option("--all", "show_all", is_flag=True, help="Show terminated sessions too.")
+@workspace_option()
 @click.pass_context
-def session_list(ctx: click.Context, show_all: bool) -> None:
+def session_list(ctx: click.Context, show_all: bool, workspace_key: str | None) -> None:
     """List Claude Code sessions with ticket mapping."""
     try:
         root = resolve_root(ctx)
@@ -314,11 +315,15 @@ def session_list(ctx: click.Context, show_all: bool) -> None:
         ctx.exit(1)
         return
 
+    key_filter = resolve_ticket_key(ctx, workspace_key)
     ticket_keys = {key for key, _ in enumerate_ticket_dirs(root)}
     sessions = _discover_sessions()
 
     if not show_all:
         sessions = [s for s in sessions if s.get("alive")]
+
+    if key_filter:
+        sessions = [s for s in sessions if _match_session_ticket(s, ticket_keys) == key_filter]
 
     if not sessions:
         msg = "No active sessions." if not show_all else "No sessions found."
@@ -452,15 +457,16 @@ def session_show(ctx: click.Context, session_id: str) -> None:
     allow_extra_args=True,
     allow_interspersed_args=False,
 ))
-@click.argument("key", shell_complete=complete_ticket_key)
+@click.argument("key", required=False, default=None, shell_complete=complete_ticket_key)
 @click.option("--prompt", "-p", default=None, help="Initial prompt for the session.")
 @click.option("--repo", "-r", default=None, help="Start session in a specific repo worktree.")
 @click.option("--skip-permissions", is_flag=True, help="Pass --dangerously-skip-permissions (requires sandbox).")
+@workspace_option()
 @click.argument("claude_args", nargs=-1, type=click.UNPROCESSED)
 @click.pass_context
 def session_start(
-    ctx: click.Context, key: str, prompt: str | None, repo: str | None,
-    skip_permissions: bool, claude_args: tuple[str, ...],
+    ctx: click.Context, key: str | None, prompt: str | None, repo: str | None,
+    skip_permissions: bool, workspace_key: str | None, claude_args: tuple[str, ...],
 ) -> None:
     """Launch a Claude Code session focused on a specific ticket.
 
@@ -470,6 +476,12 @@ def session_start(
         root = resolve_root(ctx)
     except ConfigError as exc:
         error(str(exc))
+        ctx.exit(1)
+        return
+
+    key = resolve_ticket_key(ctx, key or workspace_key)
+    if not key:
+        error("No workspace specified. Provide a ticket key, use --workspace, or run from a workspace directory.")
         ctx.exit(1)
         return
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import click
 
 from duct.cli.output import debug, error, output, spinner, success, update_spinner, warn
-from duct.cli.resolve import resolve_root
+from duct.cli.resolve import resolve_root, resolve_ticket_key, workspace_option
 from duct.config import (
     AuthError,
     ConfigError,
@@ -78,11 +78,13 @@ def _report_result(r):
 
 @click.group(invoke_without_command=True)
 @click.option("--force", is_flag=True, help="Bypass staleness checks.")
+@workspace_option()
 @click.pass_context
-def sync(ctx: click.Context, force: bool) -> None:
+def sync(ctx: click.Context, force: bool, workspace_key: str | None) -> None:
     """Run sync sources. Without a subcommand, runs all sources."""
     ctx.ensure_object(dict)
     ctx.obj["force"] = force
+    ctx.obj["workspace_key"] = resolve_ticket_key(ctx, workspace_key)
 
     if ctx.invoked_subcommand is not None:
         return
@@ -95,6 +97,7 @@ def sync(ctx: click.Context, force: bool) -> None:
         ctx.exit(1)
         return
 
+    ticket_key = ctx.obj.get("workspace_key")
     intervals = {
         "jira": cfg.sync_intervals.jira,
         "github": cfg.sync_intervals.github,
@@ -115,7 +118,8 @@ def sync(ctx: click.Context, force: bool) -> None:
             update_spinner(status, f"Syncing... ({r.source} done)")
 
         results = coordinator.run(
-            sources, force=force, on_result=on_result, on_start=on_start
+            sources, force=force, ticket_key=ticket_key,
+            on_result=on_result, on_start=on_start,
         )
 
     if not results:
@@ -138,6 +142,7 @@ def sync(ctx: click.Context, force: bool) -> None:
 def _run_single_source(ctx, source_factory):
     """Helper to run a single sync source."""
     force = ctx.obj.get("force", False)
+    ticket_key = ctx.obj.get("workspace_key")
     try:
         root = resolve_root(ctx)
         cfg = load_config(root)
@@ -156,7 +161,7 @@ def _run_single_source(ctx, source_factory):
     coordinator = SyncCoordinator(root, {source.name: 0})
 
     with spinner(f"Syncing {source.name}..."):
-        results = coordinator.run([source], force=force)
+        results = coordinator.run([source], force=force, ticket_key=ticket_key)
 
     for r in results:
         _report_result(r)

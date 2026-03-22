@@ -7,16 +7,19 @@ from pathlib import Path
 
 import click
 
-from duct.cli.output import Col, error, output, success, table
-from duct.cli.resolve import complete_repo_name, complete_ticket_key, resolve_root
+from duct.cli.output import Col, error, output, success, table, warn
+from duct.cli.resolve import complete_repo_name, complete_ticket_key, resolve_root, resolve_ticket_key, workspace_option
 from duct.config import ConfigError, WorkspaceConfig, load_config
 from duct.models import RepoEntry
 from duct.workspace import (
+    archive_ticket,
     branch_name,
+    ensure_ticket_dir,
     enumerate_ticket_dirs,
     load_workspace,
     read_issue_type,
     resolve_ticket_dir,
+    restore_ticket,
     save_workspace,
 )
 
@@ -154,6 +157,7 @@ def workspace(ctx: click.Context) -> None:
 @click.argument("repo_name", required=False, shell_complete=complete_repo_name)
 @click.argument("basebranch", required=False)
 @click.option("--branch", default=None, help="Override auto-generated feature branch name.")
+@workspace_option()
 @click.pass_context
 def add_repo(
     ctx: click.Context,
@@ -161,6 +165,7 @@ def add_repo(
     repo_name: str | None,
     basebranch: str | None,
     branch: str | None,
+    workspace_key: str | None,
 ) -> None:
     """Add a repo worktree to a ticket workspace.
 
@@ -181,7 +186,9 @@ def add_repo(
         ctx.exit(1)
         return
 
-    # -- Resolve KEY interactively if missing --
+    # -- Resolve KEY: explicit arg > --workspace flag > CWD detection > interactive --
+    if not key:
+        key = resolve_ticket_key(ctx, workspace_key)
     if not key:
         tickets = enumerate_ticket_dirs(root)
         if not tickets:
@@ -318,8 +325,9 @@ workspace.add_command(add_repo, "add-repo")
 
 
 @workspace.command("status")
+@workspace_option()
 @click.pass_context
-def workspace_status(ctx: click.Context) -> None:
+def workspace_status(ctx: click.Context, workspace_key: str | None) -> None:
     """Show workspace health across all tickets."""
     try:
         root = resolve_root(ctx)
@@ -328,7 +336,10 @@ def workspace_status(ctx: click.Context) -> None:
         ctx.exit(1)
         return
 
+    key_filter = resolve_ticket_key(ctx, workspace_key)
     tickets = enumerate_ticket_dirs(root)
+    if key_filter:
+        tickets = [(k, p) for k, p in tickets if k == key_filter]
     if not tickets:
         output("No tickets found in workspace.")
         return
@@ -365,15 +376,22 @@ def workspace_status(ctx: click.Context) -> None:
 
 
 @workspace.command("priority")
-@click.argument("key", shell_complete=complete_ticket_key)
+@click.argument("key", required=False, default=None, shell_complete=complete_ticket_key)
 @click.argument("value", type=int)
+@workspace_option()
 @click.pass_context
-def workspace_priority(ctx: click.Context, key: str, value: int) -> None:
+def workspace_priority(ctx: click.Context, key: str | None, value: int, workspace_key: str | None) -> None:
     """Set the priority for a ticket workspace."""
     try:
         root = resolve_root(ctx)
     except ConfigError as exc:
         error(str(exc))
+        ctx.exit(1)
+        return
+
+    key = resolve_ticket_key(ctx, key or workspace_key)
+    if not key:
+        error("No workspace specified. Provide a ticket key, use --workspace, or run from a workspace directory.")
         ctx.exit(1)
         return
 
@@ -396,9 +414,10 @@ def workspace_priority(ctx: click.Context, key: str, value: int) -> None:
 
 
 @workspace.command("path")
-@click.argument("key", shell_complete=complete_ticket_key)
+@click.argument("key", required=False, default=None, shell_complete=complete_ticket_key)
+@workspace_option()
 @click.pass_context
-def workspace_path(ctx: click.Context, key: str) -> None:
+def workspace_path(ctx: click.Context, key: str | None, workspace_key: str | None) -> None:
     """Print the workspace path for a ticket. Useful for shell integration:
     cd $(duct workspace path KEY)
     """
@@ -406,6 +425,12 @@ def workspace_path(ctx: click.Context, key: str) -> None:
         root = resolve_root(ctx)
     except ConfigError as exc:
         error(str(exc))
+        ctx.exit(1)
+        return
+
+    key = resolve_ticket_key(ctx, key or workspace_key)
+    if not key:
+        error("No workspace specified. Provide a ticket key, use --workspace, or run from a workspace directory.")
         ctx.exit(1)
         return
 
@@ -420,3 +445,208 @@ def workspace_path(ctx: click.Context, key: str) -> None:
         output("", data={"key": key, "path": str(ticket_dir)})
     else:
         click.echo(str(ticket_dir))
+
+
+@workspace.command("new")
+@click.argument("key")
+@click.pass_context
+def workspace_new(ctx: click.Context, key: str) -> None:
+    """Create a new ticket workspace, syncing from Jira if configured."""
+    try:
+        root = resolve_root(ctx)
+        cfg = load_config(root)
+    except ConfigError as exc:
+        error(str(exc))
+        ctx.exit(1)
+        return
+
+    key = key.upper()
+
+    if cfg.jira_domain:
+        try:
+            from duct.config import jira_email, jira_token
+            from duct.exceptions import AuthError
+            from duct.sync.jira import JiraSync
+
+            email = jira_email()
+            token = jira_token()
+            source = JiraSync(
+                domain=cfg.jira_domain,
+                email=email,
+                token=token,
+                jql=f"issueKey = {key}",
+            )
+            result = source.sync(root, ticket_key=key)
+            ticket_dir = resolve_ticket_dir(root, key)
+            if ticket_dir:
+                success(f"Created workspace for {key} at {ticket_dir}")
+            else:
+                warn(f"Sync completed but no workspace dir found for {key}. The ticket may not match the JQL filter.")
+            return
+        except AuthError:
+            warn("Jira credentials not configured — creating minimal workspace.")
+        except Exception as exc:
+            warn(f"Jira sync failed ({exc}) — creating minimal workspace.")
+
+    ticket_dir = ensure_ticket_dir(root, key, key)
+    warn("Jira not configured. Run 'duct sync' after setting up credentials to populate ticket data.")
+    success(f"Created workspace for {key} at {ticket_dir}")
+
+
+@workspace.command("list")
+@click.option(
+    "--category", default=None,
+    help="Filter by workflow category (e.g. 'Active Development').",
+)
+@click.option("--status", "status_filter", default=None, help="Filter by Jira status.")
+@click.option(
+    "--sort",
+    "sort_by",
+    default=None,
+    type=click.Choice(["key", "status", "category"]),
+    help="Sort results.",
+)
+@workspace_option()
+@click.pass_context
+def workspace_list(
+    ctx: click.Context,
+    category: str | None,
+    status_filter: str | None,
+    sort_by: str | None,
+    workspace_key: str | None,
+) -> None:
+    """List all ticket workspaces."""
+    import re
+    from duct.markdown import extract_table, parse_frontmatter
+
+    try:
+        root = resolve_root(ctx)
+    except ConfigError as exc:
+        error(str(exc))
+        ctx.exit(1)
+        return
+
+    key_filter = resolve_ticket_key(ctx, workspace_key)
+    tickets = enumerate_ticket_dirs(root)
+    if key_filter:
+        tickets = [(k, p) for k, p in tickets if k == key_filter]
+    if not tickets:
+        output("No ticket workspaces found.", data=[])
+        return
+
+    def _parse_ticket_md(content: str) -> dict[str, str]:
+        _meta, body = parse_frontmatter(content)
+        info: dict[str, str] = {}
+        for line in body.splitlines():
+            line = line.strip()
+            m = re.match(r"^#\s+([A-Z]+-\d+):\s+(.+)$", line)
+            if m:
+                info["key"] = m.group(1)
+                info["summary"] = m.group(2)
+                break
+        rows = extract_table(body)
+        for row in rows:
+            field_name = row.get("Field", "").strip()
+            value = row.get("Value", "").strip()
+            if field_name and value:
+                info[field_name.lower()] = value
+        return info
+
+    entries: list[dict[str, str]] = []
+    for key, path in tickets:
+        ticket_md = path / "orchestrator" / "TICKET.md"
+        info: dict[str, str] = {}
+        if ticket_md.exists():
+            try:
+                info = _parse_ticket_md(ticket_md.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+        entries.append({
+            "key": info.get("key", key),
+            "summary": info.get("summary", ""),
+            "status": info.get("status", ""),
+            "category": info.get("category", ""),
+            "path": str(path),
+        })
+
+    if category:
+        cat_lower = category.lower()
+        entries = [e for e in entries if cat_lower in e["category"].lower()]
+    if status_filter:
+        st_lower = status_filter.lower()
+        entries = [e for e in entries if st_lower in e["status"].lower()]
+
+    if sort_by == "key":
+        entries.sort(key=lambda e: e["key"])
+    elif sort_by == "status":
+        entries.sort(key=lambda e: e["status"])
+    elif sort_by == "category":
+        entries.sort(key=lambda e: e["category"])
+
+    if not entries:
+        output("No workspaces match the filter.", data=[])
+        return
+
+    columns: list[str | Col] = [
+        Col("Key", no_wrap=True),
+        Col("Summary", max_width=50),
+        "Status",
+        "Category",
+    ]
+    rows = [[e["key"], e["summary"], e["status"], e["category"]] for e in entries]
+    table("Ticket Workspaces", columns, rows, data=entries)
+
+
+@workspace.command("archive")
+@click.argument("key", required=False, default=None, shell_complete=complete_ticket_key)
+@workspace_option()
+@click.pass_context
+def workspace_archive(ctx: click.Context, key: str | None, workspace_key: str | None) -> None:
+    """Archive a ticket workspace (move it to .archive/)."""
+    try:
+        root = resolve_root(ctx)
+    except ConfigError as exc:
+        error(str(exc))
+        ctx.exit(1)
+        return
+
+    key = resolve_ticket_key(ctx, key or workspace_key)
+    if not key:
+        error("No workspace specified. Provide a ticket key, use --workspace, or run from a workspace directory.")
+        ctx.exit(1)
+        return
+
+    ticket_dir = resolve_ticket_dir(root, key)
+    if not ticket_dir:
+        error(f"Ticket {key} not found in workspace.")
+        ctx.exit(1)
+        return
+
+    result = archive_ticket(root, key)
+    if result is None:
+        error(f"Failed to archive {key}.")
+        ctx.exit(1)
+        return
+
+    success(f"Archived {key} to {result}")
+
+
+@workspace.command("restore")
+@click.argument("key")
+@click.pass_context
+def workspace_restore(ctx: click.Context, key: str) -> None:
+    """Restore an archived workspace back to the workspace root."""
+    try:
+        root = resolve_root(ctx)
+    except ConfigError as exc:
+        error(str(exc))
+        ctx.exit(1)
+        return
+
+    result = restore_ticket(root, key)
+    if result is None:
+        error(f"Ticket {key} not found in archive.")
+        ctx.exit(1)
+        return
+
+    success(f"Restored {key} to {result}")

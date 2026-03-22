@@ -20,11 +20,13 @@ class SessionSync:
         self._claude_dir = claude_dir or Path.home() / ".claude"
         self._lookback_hours = lookback_hours
 
-    def sync(self, root: Path) -> SyncResult:
+    def sync(self, root: Path, ticket_key: str | None = None) -> SyncResult:
         start = time.time()
         errors: list[str] = []
 
         ticket_keys = {key for key, _ in enumerate_ticket_dirs(root)}
+        if ticket_key:
+            ticket_keys &= {ticket_key}
         if not ticket_keys:
             return SyncResult(
                 source=self.name,

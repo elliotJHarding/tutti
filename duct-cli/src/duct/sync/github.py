@@ -10,7 +10,7 @@ import httpx
 
 from duct.exceptions import AuthError, SyncError
 from duct.markdown import TICKET_KEY_PATTERN, atomic_write, generate_frontmatter
-from duct.models import PRComment, PullRequest, Reviewer, SyncResult
+from duct.models import PRComment, PullRequest, ReviewThread, Reviewer, SyncResult
 from duct.workspace import enumerate_ticket_dirs, orchestrator_dir
 
 _GRAPHQL_URL = "https://api.github.com/graphql"
@@ -28,13 +28,12 @@ _PR_FIELDS = """
         updatedAt
         mergedAt
         headRefName
-        repository { nameWithOwner }
+        baseRefName
+        body
+        repository { nameWithOwner name }
         author { login }
         reviews(last: 10) {
           nodes { state author { login } }
-        }
-        reviewRequests(first: 10) {
-          nodes { requestedReviewer { ... on User { login } } }
         }
         commits(last: 1) {
           nodes {
@@ -50,15 +49,18 @@ _PR_FIELDS = """
             createdAt
           }
         }
-        reviewThreads(last: 20) {
+        reviewThreads(last: 30) {
           nodes {
-            comments(first: 1) {
+            isResolved
+            comments(first: 10) {
               nodes {
                 author { login }
                 body
                 createdAt
                 path
                 line
+                originalLine
+                diffHunk
               }
             }
           }
@@ -75,6 +77,13 @@ query($query: String!, $cursor: String) {
 }
 """
 
+_LANG_MAP = {
+    "py": "python", "ts": "typescript", "tsx": "typescript",
+    "js": "javascript", "jsx": "javascript", "go": "go",
+    "rb": "ruby", "java": "java", "cs": "csharp",
+    "rs": "rust", "cpp": "cpp", "c": "c",
+}
+
 
 class GitHubSync:
     name = "github"
@@ -89,11 +98,13 @@ class GitHubSync:
             "Content-Type": "application/json",
         }
 
-    def sync(self, root: Path) -> SyncResult:
+    def sync(self, root: Path, ticket_key: str | None = None) -> SyncResult:
         start = time.time()
         errors: list[str] = []
 
         ticket_keys = {key for key, _ in enumerate_ticket_dirs(root)}
+        if ticket_key:
+            ticket_keys &= {ticket_key}
         if not ticket_keys:
             return SyncResult(
                 source=self.name, tickets_synced=0, duration_seconds=time.time() - start
@@ -116,7 +127,7 @@ class GitHubSync:
             for key in matched_keys:
                 ticket_prs[key].append(pr)
 
-        # Write PULL_REQUESTS.md for each ticket that has PRs
+        # Write per-PR files for each ticket that has PRs
         synced = 0
         for key, prs in ticket_prs.items():
             if not prs:
@@ -126,7 +137,7 @@ class GitHubSync:
                 continue
             _, ticket_path = ticket_dirs[0]
             try:
-                self._write_pull_requests_md(prs, ticket_path)
+                self._write_pr_files(prs, ticket_path)
                 synced += 1
             except Exception as exc:
                 errors.append(f"{key}: failed to write PR data - {exc}")
@@ -274,6 +285,9 @@ class GitHubSync:
 
     def _parse_pr_node(self, node: dict) -> PullRequest:
         """Parse a GraphQL PR node into a PullRequest model."""
+        repo_obj = node.get("repository", {})
+        repo_full = repo_obj.get("nameWithOwner", "")
+
         if node.get("mergedAt"):
             state = "merged"
         else:
@@ -293,15 +307,16 @@ class GitHubSync:
                     .get(ci_state, ci_state)
                 )
 
-        # Build reviewer map (last review per author wins)
+        # Build reviewer map (last non-dismissed review per author wins)
         reviewer_map: dict[str, str] = {}
         for r in reviews:
             login = r.get("author", {}).get("login", "")
-            if login:
-                reviewer_map[login] = r.get("state", "")
+            state_r = r.get("state", "")
+            if login and state_r != "DISMISSED":
+                reviewer_map[login] = state_r
         reviewers = [Reviewer(login=lg, state=st) for lg, st in reviewer_map.items()]
 
-        # Collect comments from both regular comments and review threads
+        # General PR-level comments
         comments: list[PRComment] = []
         for c in node.get("comments", {}).get("nodes", []):
             if c and c.get("body"):
@@ -310,22 +325,31 @@ class GitHubSync:
                     created_at=c.get("createdAt", ""),
                     body=c.get("body", ""),
                 ))
+
+        # Review threads (inline code comments)
+        review_threads: list[ReviewThread] = []
         for thread in node.get("reviewThreads", {}).get("nodes", []):
-            thread_comments = thread.get("comments", {}).get("nodes", [])
-            for c in thread_comments:
+            is_resolved = thread.get("isResolved", False)
+            thread_comments: list[PRComment] = []
+            for c in thread.get("comments", {}).get("nodes", []):
                 if c and c.get("body"):
-                    comments.append(PRComment(
+                    thread_comments.append(PRComment(
                         author=c.get("author", {}).get("login", "unknown"),
                         created_at=c.get("createdAt", ""),
                         body=c.get("body", ""),
                         path=c.get("path"),
-                        line=c.get("line"),
+                        line=c.get("line") or c.get("originalLine"),
+                        diff_hunk=c.get("diffHunk"),
                     ))
+            review_threads.append(ReviewThread(
+                is_resolved=is_resolved,
+                comments=thread_comments,
+            ))
 
         return PullRequest(
             number=node["number"],
             title=node.get("title", ""),
-            repo=node.get("repository", {}).get("nameWithOwner", ""),
+            repo=repo_full,
             state=state,
             author=node.get("author", {}).get("login", "unknown"),
             is_draft=node.get("isDraft", False),
@@ -335,18 +359,30 @@ class GitHubSync:
             created_at=node.get("createdAt", ""),
             updated_at=node.get("updatedAt", ""),
             branch=node.get("headRefName", ""),
+            base_branch=node.get("baseRefName", ""),
+            body=node.get("body") or "",
             reviewers=reviewers,
             comments=comments,
+            review_threads=review_threads,
         )
 
     def _derive_review_status(self, reviews: list[dict]) -> str:
-        """Derive the overall review status from a list of review nodes."""
+        """Derive overall review status using per-reviewer last-state tracking."""
         if not reviews:
             return "pending"
-        for review in reversed(reviews):
+        reviewer_states: dict[str, str] = {}
+        for review in reviews:
+            login = review.get("author", {}).get("login", "")
             state = review.get("state", "")
-            if state in ("APPROVED", "CHANGES_REQUESTED"):
-                return state
+            if login and state not in ("DISMISSED", "COMMENTED"):
+                reviewer_states[login] = state
+        if not reviewer_states:
+            return "pending"
+        states = set(reviewer_states.values())
+        if "CHANGES_REQUESTED" in states:
+            return "CHANGES_REQUESTED"
+        if states == {"APPROVED"}:
+            return "APPROVED"
         return "pending"
 
     def _match_ticket_keys(self, pr: PullRequest, known_keys: set[str]) -> set[str]:
@@ -355,48 +391,96 @@ class GitHubSync:
         matches = set(TICKET_KEY_PATTERN.findall(text))
         return matches & known_keys
 
-    def _write_pull_requests_md(self, prs: list[PullRequest], ticket_dir: Path) -> None:
-        """Write PULL_REQUESTS.md into the orchestrator directory for a ticket."""
-        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        parts: list[str] = []
-
-        parts.append(generate_frontmatter(source="sync", synced_at=now))
-        parts.append("")
-        parts.append("# Pull Requests")
-        parts.append("")
+    def _write_pr_files(self, prs: list[PullRequest], ticket_dir: Path) -> None:
+        """Write orchestrator/prs/PR-{number}-{repo}.md for each PR."""
+        prs_dir = orchestrator_dir(ticket_dir) / "prs"
+        prs_dir.mkdir(exist_ok=True)
 
         for pr in prs:
-            draft = " (DRAFT)" if pr.is_draft else ""
-            parts.append(f"## #{pr.number} - {pr.title}{draft}")
-            parts.append("")
-            parts.append(f"- **Repo**: {pr.repo}")
-            parts.append(f"- **State**: {pr.state}")
-            parts.append(f"- **Author**: @{pr.author}")
-            parts.append(f"- **Review**: {pr.review_status}")
-            parts.append(f"- **CI**: {pr.ci_status}")
-            parts.append(f"- **Created**: {pr.created_at}")
-            parts.append(f"- **Updated**: {pr.updated_at}")
-            parts.append(f"- [View on GitHub]({pr.url})")
-            parts.append("")
+            repo_short = pr.repo.split("/")[-1]
+            filename = f"PR-{pr.number}-{repo_short}.md"
+            content = self._render_pr_md(pr)
+            atomic_write(prs_dir / filename, content)
 
-            if pr.reviewers:
-                parts.append("### Reviewers")
-                parts.append("")
-                for r in pr.reviewers:
-                    parts.append(f"- @{r.login}: {r.state}")
-                parts.append("")
+    def _render_pr_md(self, pr: PullRequest) -> str:
+        """Render a PR as markdown."""
+        now = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        lines = [
+            generate_frontmatter(source="sync", synced_at=now),
+            "",
+            f"# PR #{pr.number}: {pr.title}",
+            f"**Repo:** {pr.repo}",
+            f"**Branch:** {pr.branch} → {pr.base_branch}",
+            f"**Status:** {'[Draft] ' if pr.is_draft else ''}{pr.state.title()} | {pr.review_status.replace('_', ' ').title()}",
+            f"**CI:** {pr.ci_status}",
+            f"**Author:** @{pr.author}",
+            f"**URL:** {pr.url}",
+            f"**Updated:** {pr.updated_at[:10]}",
+            "",
+            "## Description",
+            pr.body or "_No description._",
+            "",
+        ]
 
-            review_comments = [c for c in pr.comments if c.path]
-            if review_comments:
-                parts.append("### Outstanding Comments")
-                parts.append("")
-                for c in review_comments:
-                    loc = f"`{c.path}:{c.line}`" if c.line else f"`{c.path}`"
-                    parts.append(f"> **@{c.author}** on {loc} ({c.created_at})")
-                    for line in c.body.splitlines():
-                        parts.append(f"> {line}")
-                    parts.append("")
+        # Reviewer summary
+        if pr.reviewers:
+            lines.append("## Reviewers")
+            lines.append("")
+            for r in pr.reviewers:
+                lines.append(f"- @{r.login}: {r.state}")
+            lines.append("")
 
-        content = "\n".join(parts)
-        orch = orchestrator_dir(ticket_dir)
-        atomic_write(orch / "PULL_REQUESTS.md", content)
+        # Review threads (inline comments)
+        unresolved = [t for t in pr.review_threads if not t.is_resolved]
+        resolved_count = len(pr.review_threads) - len(unresolved)
+        if unresolved:
+            lines.append("## Outstanding Review Comments")
+            lines.append("")
+            for thread in unresolved:
+                for i, c in enumerate(thread.comments):
+                    author = c.author
+                    created = (c.created_at or "")[:10]
+                    body = (c.body or "").strip()
+                    path = c.path or ""
+                    line_num = c.line or ""
+                    diff_hunk = (c.diff_hunk or "").strip()
+
+                    if i == 0:
+                        location = f"`{path}:{line_num}`" if line_num else f"`{path}`"
+                        lines.append(f"### {location} — {author} ({created})")
+
+                        if diff_hunk:
+                            ext = path.rsplit(".", 1)[-1] if "." in path else ""
+                            lang = _LANG_MAP.get(ext, "")
+                            lines.append(f"```{lang}")
+                            hunk_lines = diff_hunk.split("\n")
+                            context = hunk_lines[-6:] if len(hunk_lines) > 6 else hunk_lines
+                            lines.extend(context)
+                            lines.append("```")
+
+                        lines.append(f"> {body}")
+                    else:
+                        lines.append(f"**Reply — {author} ({created}):**")
+                        lines.append(f"> {body}")
+                    lines.append("")
+
+                lines.append("---")
+                lines.append("")
+
+            if resolved_count:
+                lines.append(f"<!-- {resolved_count} resolved thread(s) hidden -->")
+                lines.append("")
+
+        # General comments
+        if pr.comments:
+            lines.append("## General Comments")
+            lines.append("")
+            for c in pr.comments:
+                author = c.author
+                created = (c.created_at or "")[:10]
+                body = (c.body or "").strip()
+                lines.append(f"### {author} — {created}")
+                lines.append(body)
+                lines.append("")
+
+        return "\n".join(lines)
